@@ -43,11 +43,18 @@ def test_cli_trace_can_be_printed(capsys) -> None:
 
 
 def test_cli_defaults_to_live_planner(capsys, monkeypatch) -> None:
+    class FakeMemoryManager:
+        def __init__(self, **kwargs):
+            assert kwargs["memory_dir"] == ".memory"
+            assert kwargs["session_id"] == "default"
+
     class FakeDeepSeekPlanner:
         def __init__(self, config, **kwargs):
             assert config.api_key == "sk-test"
             assert kwargs["max_tool_rounds"] == 8
             assert kwargs["permission_policy"].mode.value == "ask"
+            assert isinstance(kwargs["memory_manager"], FakeMemoryManager)
+            assert kwargs["show_memory"] is False
 
         def __call__(self, state: AgentState):
             from drift_agent.loop import StepResult
@@ -61,6 +68,7 @@ def test_cli_defaults_to_live_planner(capsys, monkeypatch) -> None:
 
     monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
     monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setattr("drift_agent.cli.MemoryManager", FakeMemoryManager)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
 
     exit_code = main(["write tests"])
@@ -71,6 +79,10 @@ def test_cli_defaults_to_live_planner(capsys, monkeypatch) -> None:
 
 
 def test_cli_passes_permission_mode_to_live_planner(capsys, monkeypatch) -> None:
+    class FakeMemoryManager:
+        def __init__(self, **kwargs):
+            pass
+
     class FakeDeepSeekPlanner:
         def __init__(self, config, **kwargs):
             assert kwargs["permission_policy"].mode.value == "deny"
@@ -87,9 +99,78 @@ def test_cli_passes_permission_mode_to_live_planner(capsys, monkeypatch) -> None
 
     monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
     monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setattr("drift_agent.cli.MemoryManager", FakeMemoryManager)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
 
     exit_code = main(["write tests", "--permission-mode", "deny"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "final: live answer" in captured.out
+
+
+def test_cli_passes_memory_options_to_live_planner(capsys, monkeypatch) -> None:
+    class FakeMemoryManager:
+        def __init__(self, **kwargs):
+            assert kwargs["memory_dir"] == "custom-memory"
+            assert kwargs["session_id"] == "project-a"
+
+    class FakeDeepSeekPlanner:
+        def __init__(self, config, **kwargs):
+            assert isinstance(kwargs["memory_manager"], FakeMemoryManager)
+            assert kwargs["show_memory"] is True
+
+        def __call__(self, state: AgentState):
+            from drift_agent.loop import StepResult
+
+            return StepResult(
+                action="fake-live",
+                observation="called fake live planner",
+                status=AgentStatus.SUCCESS,
+                output="live answer",
+            )
+
+    monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setattr("drift_agent.cli.MemoryManager", FakeMemoryManager)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    exit_code = main(
+        [
+            "write tests",
+            "--memory-dir",
+            "custom-memory",
+            "--session",
+            "project-a",
+            "--show-memory",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "final: live answer" in captured.out
+
+
+def test_cli_memory_off_does_not_create_memory_manager(capsys, monkeypatch) -> None:
+    class FakeDeepSeekPlanner:
+        def __init__(self, config, **kwargs):
+            assert kwargs["memory_manager"] is None
+
+        def __call__(self, state: AgentState):
+            from drift_agent.loop import StepResult
+
+            return StepResult(
+                action="fake-live",
+                observation="called fake live planner",
+                status=AgentStatus.SUCCESS,
+                output="live answer",
+            )
+
+    monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    exit_code = main(["write tests", "--memory", "off"])
 
     captured = capsys.readouterr()
     assert exit_code == 0

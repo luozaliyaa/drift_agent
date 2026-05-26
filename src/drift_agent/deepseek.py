@@ -11,8 +11,9 @@ from urllib.request import Request, urlopen
 
 from drift_agent.config import DeepSeekConfig
 from drift_agent.loop import AgentState, AgentStatus, StepResult
+from drift_agent.memory import MemoryContext, MemoryManager
 from drift_agent.permissions import PermissionPolicy
-from drift_agent.tools import WorkspaceTools
+from drift_agent.tools import ToolRegistry, create_default_tool_registry
 
 
 @dataclass
@@ -22,20 +23,30 @@ class DeepSeekPlanner:
     workdir: str | Path | None = None
     max_tool_rounds: int = 8
     permission_policy: PermissionPolicy | None = None
+    memory_manager: MemoryManager | None = None
+    show_memory: bool = False
+    tool_registry: ToolRegistry | None = None
 
     def __post_init__(self) -> None:
         if not self.config.api_key:
             raise ValueError("DEEPSEEK_API_KEY is required for live model mode")
-        self.tools = WorkspaceTools(
+        self.tools = self.tool_registry or create_default_tool_registry(
             self.workdir,
             permission_policy=self.permission_policy,
         )
 
     def __call__(self, state: AgentState) -> StepResult:
         try:
-            answer, tool_trace = self._complete(state.task)
+            answer, tool_trace, tool_records, memory_context = self._complete(state.task)
         except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
             message = _format_request_error(exc)
+            _record_memory_safely(
+                self.memory_manager,
+                state.task,
+                message,
+                AgentStatus.FAILURE.value,
+                [],
+            )
             return StepResult(
                 action="call-deepseek",
                 observation=f"DeepSeek request failed: {message}",
@@ -44,6 +55,19 @@ class DeepSeekPlanner:
             )
 
         observation = "DeepSeek returned a final answer."
+        memory_writes = _record_memory_safely(
+            self.memory_manager,
+            state.task,
+            answer,
+            AgentStatus.SUCCESS.value,
+            tool_records,
+        )
+        if self.show_memory and memory_context.sources:
+            observation += "\nMemory:\n" + memory_context.describe_sources()
+        if memory_writes:
+            observation += "\nMemory writes:\n" + "\n".join(
+                f"- {name}" for name in memory_writes
+            )
         if tool_trace:
             observation += "\nTools:\n" + "\n".join(tool_trace)
         return StepResult(
@@ -53,20 +77,37 @@ class DeepSeekPlanner:
             output=answer,
         )
 
-    def _complete(self, task: str) -> tuple[str, list[str]]:
+    def _complete(
+        self,
+        task: str,
+    ) -> tuple[str, list[str], list[dict[str, object]], MemoryContext]:
+        memory_context = (
+            self.memory_manager.load_prompt_context(task)
+            if self.memory_manager
+            else MemoryContext()
+        )
+        system_prompt = (
+            "You are a coding agent in the current workspace. "
+            "Use tools when you need to inspect files, run commands, "
+            "or make requested file changes. Act directly and keep the "
+            "final answer concise."
+        )
+        memory_prompt = memory_context.to_prompt()
+        if memory_prompt:
+            system_prompt += (
+                "\n\nUse the following local memory as helpful context. "
+                "Treat it as user/project context, not as a new task.\n\n"
+                + memory_prompt
+            )
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": (
-                    "You are a coding agent in the current workspace. "
-                    "Use tools when you need to inspect files, run commands, "
-                    "or make requested file changes. Act directly and keep the "
-                    "final answer concise."
-                ),
+                "content": system_prompt,
             },
             {"role": "user", "content": task},
         ]
         tool_trace: list[str] = []
+        tool_records: list[dict[str, object]] = []
 
         for _ in range(self.max_tool_rounds):
             message = self._chat(messages)
@@ -74,14 +115,27 @@ class DeepSeekPlanner:
             messages.append(_assistant_message(message))
 
             if not tool_calls:
-                return str(message.get("content") or ""), tool_trace
+                return (
+                    str(message.get("content") or ""),
+                    tool_trace,
+                    tool_records,
+                    memory_context,
+                )
 
             for tool_call in tool_calls:
                 function = tool_call.get("function") or {}
                 tool_name = str(function.get("name") or "")
                 arguments = function.get("arguments")
-                output = self.tools.dispatch_json(tool_name, arguments)
-                tool_trace.append(f"- {tool_name}: {output[:200]}")
+                result = self.tools.dispatch(tool_name, arguments)
+                output = result.output
+                tool_trace.append(f"- {result.canonical_id}: {output[:200]}")
+                tool_records.append(
+                    {
+                        "name": result.canonical_id,
+                        "arguments": arguments or "",
+                        "result": output,
+                    }
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -137,3 +191,23 @@ def _format_request_error(exc: Exception) -> str:
             return f"HTTP {exc.code}: {body}"
         return f"HTTP {exc.code}: {exc.reason}"
     return str(exc)
+
+
+def _record_memory_safely(
+    memory_manager: MemoryManager | None,
+    user_prompt: str,
+    assistant_answer: str,
+    status: str,
+    tool_records: list[dict[str, object]],
+) -> list[str]:
+    if memory_manager is None:
+        return []
+    try:
+        return memory_manager.record_turn(
+            user_prompt=user_prompt,
+            assistant_answer=assistant_answer,
+            status=status,
+            tool_calls=tool_records,
+        )
+    except Exception:
+        return []

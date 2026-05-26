@@ -1,41 +1,19 @@
-"""Workspace tools exposed to the model."""
+"""Workspace-local tools."""
 
 from __future__ import annotations
 
 import glob as glob_module
-import json
 import subprocess
-from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from drift_agent.permissions import PermissionPolicy
+from drift_agent.tools.base import ToolCallResult, ToolProvider, ToolSpec, truncate_output
+from drift_agent.tools.registry import ToolRegistry
 
 
-MAX_TOOL_OUTPUT_CHARS = 50000
-
-
-@dataclass(frozen=True)
-class ToolSpec:
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    handler: Callable[..., str]
-
-    def as_openai_tool(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
-
-
-class WorkspaceTools:
-    """Dispatch map for model-callable workspace tools."""
+class WorkspaceToolProvider(ToolProvider):
+    namespace = "workspace"
 
     def __init__(
         self,
@@ -45,8 +23,10 @@ class WorkspaceTools:
         self.workdir = Path(workdir or Path.cwd()).resolve()
         self.permission_policy = permission_policy or PermissionPolicy(self.workdir)
         self._specs = {
-            "bash": ToolSpec(
-                name="bash",
+            "workspace.bash": ToolSpec(
+                canonical_id="workspace.bash",
+                provider=self.namespace,
+                aliases=("bash",),
                 description="Run a shell command in the workspace.",
                 parameters={
                     "type": "object",
@@ -55,8 +35,10 @@ class WorkspaceTools:
                 },
                 handler=self.run_bash,
             ),
-            "read_file": ToolSpec(
-                name="read_file",
+            "workspace.read_file": ToolSpec(
+                canonical_id="workspace.read_file",
+                provider=self.namespace,
+                aliases=("read_file",),
                 description="Read a text file from the workspace.",
                 parameters={
                     "type": "object",
@@ -68,8 +50,10 @@ class WorkspaceTools:
                 },
                 handler=self.run_read_file,
             ),
-            "write_file": ToolSpec(
-                name="write_file",
+            "workspace.write_file": ToolSpec(
+                canonical_id="workspace.write_file",
+                provider=self.namespace,
+                aliases=("write_file",),
                 description="Write text content to a file inside the workspace.",
                 parameters={
                     "type": "object",
@@ -81,8 +65,10 @@ class WorkspaceTools:
                 },
                 handler=self.run_write_file,
             ),
-            "edit_file": ToolSpec(
-                name="edit_file",
+            "workspace.edit_file": ToolSpec(
+                canonical_id="workspace.edit_file",
+                provider=self.namespace,
+                aliases=("edit_file",),
                 description="Replace exact text once in a workspace file.",
                 parameters={
                     "type": "object",
@@ -95,8 +81,10 @@ class WorkspaceTools:
                 },
                 handler=self.run_edit_file,
             ),
-            "glob": ToolSpec(
-                name="glob",
+            "workspace.glob": ToolSpec(
+                canonical_id="workspace.glob",
+                provider=self.namespace,
+                aliases=("glob",),
                 description="Find workspace files matching a glob pattern.",
                 parameters={
                     "type": "object",
@@ -107,29 +95,32 @@ class WorkspaceTools:
             ),
         }
 
-    @property
-    def specs(self) -> list[ToolSpec]:
+    def list_tools(self) -> list[ToolSpec]:
         return list(self._specs.values())
 
-    def as_openai_tools(self) -> list[dict[str, Any]]:
-        return [spec.as_openai_tool() for spec in self.specs]
+    def call_tool(self, canonical_id: str, arguments: dict[str, Any]) -> ToolCallResult:
+        spec = self._specs.get(canonical_id)
+        if spec is None or spec.handler is None:
+            return ToolCallResult(canonical_id, f"Error: Unknown tool: {canonical_id}", True)
 
-    def dispatch_json(self, name: str, raw_arguments: str | dict[str, Any] | None) -> str:
-        spec = self._specs.get(name)
-        if spec is None:
-            return f"Error: Unknown tool: {name}"
+        local_name = canonical_id.removeprefix(f"{self.namespace}.")
+        decision = self.permission_policy.check(local_name, arguments)
+        if decision.action == "deny":
+            return ToolCallResult(
+                canonical_id,
+                f"Permission denied: {decision.reason}",
+                True,
+            )
 
         try:
-            arguments = _parse_arguments(raw_arguments)
-            decision = self.permission_policy.check(name, arguments)
-            if decision.action == "deny":
-                return f"Permission denied: {decision.reason}"
             output = spec.handler(**arguments)
         except TypeError as exc:
-            output = f"Error: Invalid arguments for {name}: {exc}"
+            output = f"Error: Invalid arguments for {canonical_id}: {exc}"
+            return ToolCallResult(canonical_id, output, True)
         except Exception as exc:
             output = f"Error: {exc}"
-        return _truncate(output)
+            return ToolCallResult(canonical_id, output, True)
+        return ToolCallResult(canonical_id, truncate_output(output))
 
     def safe_path(self, path: str) -> Path:
         candidate = (self.workdir / path).resolve()
@@ -183,18 +174,13 @@ class WorkspaceTools:
         return "\n".join(matches) if matches else "(no matches)"
 
 
-def _parse_arguments(raw_arguments: str | dict[str, Any] | None) -> dict[str, Any]:
-    if raw_arguments is None:
-        return {}
-    if isinstance(raw_arguments, dict):
-        return raw_arguments
-    parsed = json.loads(raw_arguments or "{}")
-    if not isinstance(parsed, dict):
-        raise ValueError("Tool arguments must decode to an object")
-    return parsed
+class WorkspaceTools(ToolRegistry):
+    """Compatibility wrapper for the previous workspace-only tool API."""
 
-
-def _truncate(output: str) -> str:
-    if len(output) <= MAX_TOOL_OUTPUT_CHARS:
-        return output
-    return output[:MAX_TOOL_OUTPUT_CHARS] + "\n... (truncated)"
+    def __init__(
+        self,
+        workdir: str | Path | None = None,
+        permission_policy: PermissionPolicy | None = None,
+    ) -> None:
+        super().__init__()
+        self.register_provider(WorkspaceToolProvider(workdir, permission_policy))
