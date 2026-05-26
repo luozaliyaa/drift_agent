@@ -26,7 +26,15 @@ The CLI accepts a task string and optional `--max-steps`. It runs the loop and p
 
 The first live model adapter uses the DeepSeek OpenAI-compatible chat endpoint. The default model is `deepseek-v4-pro` and the default base URL is `https://api.deepseek.com`. The API key is read from `DEEPSEEK_API_KEY`, optionally loaded from a local `.env` file.
 
-The CLI runs in `auto` mode by default: it uses DeepSeek when `DEEPSEEK_API_KEY` is configured and otherwise falls back to the deterministic stub.
+The CLI runs live DeepSeek mode by default. The deterministic stub remains available only through `--mode stub` for offline tests.
+
+## Tool Use
+
+The `s02` tool-use layer follows the dispatch-map pattern from the reference implementation. Tools are defined separately from their handlers, then exposed to DeepSeek with OpenAI-compatible function schemas.
+
+Supported tools are `bash`, `read_file`, `write_file`, `edit_file`, and `glob`. File tools are constrained to the current workspace with `safe_path`. Bash has a small dangerous-command blocklist and will be expanded with a permission layer in a later stage.
+
+When DeepSeek returns `tool_calls`, the planner executes each tool in order, appends `role=tool` results to the conversation, and calls the model again until it returns a final answer or reaches the configured tool-round limit.
 
 ## Future Extension Points
 

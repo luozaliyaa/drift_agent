@@ -8,3 +8,4 @@
 - [x] Add unit tests for initialization, success, failure, halt, max-step termination, and CLI smoke behavior.
 - [x] Run verification commands and update this checklist.
 - [x] Add DeepSeek live model configuration and tests.
+- [x] Add s02-style tool definitions, dispatch handlers, and DeepSeek tool-call loop.
