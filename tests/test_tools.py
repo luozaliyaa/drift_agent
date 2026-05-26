@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from drift_agent.permissions import PermissionPolicy
 from drift_agent.tools import WorkspaceTools
 
 
 def test_workspace_tools_read_write_edit_and_glob(tmp_path) -> None:
-    tools = WorkspaceTools(tmp_path)
+    tools = WorkspaceTools(
+        tmp_path,
+        permission_policy=PermissionPolicy(tmp_path, mode="allow"),
+    )
 
     assert tools.dispatch_json(
         "write_file",
@@ -21,7 +25,10 @@ def test_workspace_tools_read_write_edit_and_glob(tmp_path) -> None:
 
 
 def test_workspace_tools_block_escaping_paths(tmp_path) -> None:
-    tools = WorkspaceTools(tmp_path)
+    tools = WorkspaceTools(
+        tmp_path,
+        permission_policy=PermissionPolicy(tmp_path, mode="allow"),
+    )
 
     output = tools.dispatch_json("read_file", {"path": "../outside.txt"})
 
@@ -29,8 +36,11 @@ def test_workspace_tools_block_escaping_paths(tmp_path) -> None:
 
 
 def test_workspace_tools_block_dangerous_bash(tmp_path) -> None:
-    tools = WorkspaceTools(tmp_path)
+    tools = WorkspaceTools(
+        tmp_path,
+        permission_policy=PermissionPolicy(tmp_path, mode="allow"),
+    )
 
-    output = tools.dispatch_json("bash", {"command": "Remove-Item important.txt"})
+    output = tools.dispatch_json("bash", {"command": "sudo shutdown now"})
 
-    assert output == "Error: Dangerous command blocked"
+    assert output.startswith("Permission denied:")

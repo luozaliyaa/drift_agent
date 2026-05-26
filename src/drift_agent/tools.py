@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from drift_agent.permissions import PermissionPolicy
+
 
 MAX_TOOL_OUTPUT_CHARS = 50000
 
@@ -35,8 +37,13 @@ class ToolSpec:
 class WorkspaceTools:
     """Dispatch map for model-callable workspace tools."""
 
-    def __init__(self, workdir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        workdir: str | Path | None = None,
+        permission_policy: PermissionPolicy | None = None,
+    ) -> None:
         self.workdir = Path(workdir or Path.cwd()).resolve()
+        self.permission_policy = permission_policy or PermissionPolicy(self.workdir)
         self._specs = {
             "bash": ToolSpec(
                 name="bash",
@@ -114,6 +121,9 @@ class WorkspaceTools:
 
         try:
             arguments = _parse_arguments(raw_arguments)
+            decision = self.permission_policy.check(name, arguments)
+            if decision.action == "deny":
+                return f"Permission denied: {decision.reason}"
             output = spec.handler(**arguments)
         except TypeError as exc:
             output = f"Error: Invalid arguments for {name}: {exc}"
@@ -128,23 +138,6 @@ class WorkspaceTools:
         return candidate
 
     def run_bash(self, command: str) -> str:
-        lowered = command.lower()
-        dangerous = [
-            "rm -rf",
-            "sudo",
-            "shutdown",
-            "reboot",
-            "restart-computer",
-            "format ",
-            "del /",
-            "rd /s",
-            "rmdir /s",
-            "remove-item",
-            "> /dev/",
-        ]
-        if any(fragment in lowered for fragment in dangerous):
-            return "Error: Dangerous command blocked"
-
         try:
             result = subprocess.run(
                 command,

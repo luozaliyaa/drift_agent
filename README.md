@@ -49,3 +49,24 @@ Example:
 ```powershell
 python -m drift_agent.cli "Read README.md and summarize this project" --trace
 ```
+
+## Permissions
+
+The live agent asks before running approval-required tools such as `write_file`,
+`edit_file`, or potentially destructive shell commands.
+
+```powershell
+python -m drift_agent.cli "Create notes/plan.txt with a short plan"
+```
+
+For trusted experiments, bypass prompts:
+
+```powershell
+python -m drift_agent.cli "Create notes/plan.txt with a short plan" --permission-mode allow
+```
+
+To deny every approval-required operation:
+
+```powershell
+python -m drift_agent.cli "Try to edit README.md" --permission-mode deny
+```

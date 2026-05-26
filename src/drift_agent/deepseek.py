@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from drift_agent.config import DeepSeekConfig
 from drift_agent.loop import AgentState, AgentStatus, StepResult
+from drift_agent.permissions import PermissionPolicy
 from drift_agent.tools import WorkspaceTools
 
 
@@ -20,11 +21,15 @@ class DeepSeekPlanner:
     timeout_seconds: float = 60.0
     workdir: str | Path | None = None
     max_tool_rounds: int = 8
+    permission_policy: PermissionPolicy | None = None
 
     def __post_init__(self) -> None:
         if not self.config.api_key:
             raise ValueError("DEEPSEEK_API_KEY is required for live model mode")
-        self.tools = WorkspaceTools(self.workdir)
+        self.tools = WorkspaceTools(
+            self.workdir,
+            permission_policy=self.permission_policy,
+        )
 
     def __call__(self, state: AgentState) -> StepResult:
         try:

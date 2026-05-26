@@ -47,6 +47,7 @@ def test_cli_defaults_to_live_planner(capsys, monkeypatch) -> None:
         def __init__(self, config, **kwargs):
             assert config.api_key == "sk-test"
             assert kwargs["max_tool_rounds"] == 8
+            assert kwargs["permission_policy"].mode.value == "ask"
 
         def __call__(self, state: AgentState):
             from drift_agent.loop import StepResult
@@ -63,6 +64,32 @@ def test_cli_defaults_to_live_planner(capsys, monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
 
     exit_code = main(["write tests"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "final: live answer" in captured.out
+
+
+def test_cli_passes_permission_mode_to_live_planner(capsys, monkeypatch) -> None:
+    class FakeDeepSeekPlanner:
+        def __init__(self, config, **kwargs):
+            assert kwargs["permission_policy"].mode.value == "deny"
+
+        def __call__(self, state: AgentState):
+            from drift_agent.loop import StepResult
+
+            return StepResult(
+                action="fake-live",
+                observation="called fake live planner",
+                status=AgentStatus.SUCCESS,
+                output="live answer",
+            )
+
+    monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    exit_code = main(["write tests", "--permission-mode", "deny"])
 
     captured = capsys.readouterr()
     assert exit_code == 0

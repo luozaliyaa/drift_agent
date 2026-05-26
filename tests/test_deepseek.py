@@ -5,6 +5,7 @@ import json
 from drift_agent.config import DeepSeekConfig
 from drift_agent.deepseek import DeepSeekPlanner
 from drift_agent.loop import AgentState, AgentStatus
+from drift_agent.permissions import PermissionPolicy
 
 
 class FakeResponse:
@@ -38,6 +39,7 @@ def test_deepseek_planner_posts_expected_request(monkeypatch) -> None:
             base_url="https://api.deepseek.com",
         ),
         timeout_seconds=5,
+        permission_policy=PermissionPolicy(mode="allow"),
     )
 
     result = planner(AgentState(task="hello", max_steps=3, step_count=1))
@@ -100,6 +102,7 @@ def test_deepseek_planner_executes_tool_calls(monkeypatch, tmp_path) -> None:
     planner = DeepSeekPlanner(
         DeepSeekConfig(api_key="sk-test"),
         workdir=tmp_path,
+        permission_policy=PermissionPolicy(tmp_path, mode="allow"),
     )
 
     result = planner(AgentState(task="read note", max_steps=1, step_count=1))

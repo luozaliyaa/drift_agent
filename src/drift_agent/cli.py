@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from drift_agent.config import load_deepseek_config, load_dotenv
 from drift_agent.deepseek import DeepSeekPlanner
 from drift_agent.loop import AgentLoop, StubPlanner
+from drift_agent.permissions import PermissionPolicy, prompt_approver
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=8,
         help="Maximum model/tool exchange rounds before stopping.",
     )
+    parser.add_argument(
+        "--permission-mode",
+        choices=["ask", "allow", "deny"],
+        default="ask",
+        help="How to handle approval-required tool calls.",
+    )
     return parser
 
 
@@ -60,7 +67,15 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
     if args.mode == "live":
         config = load_deepseek_config()
         try:
-            return DeepSeekPlanner(config, max_tool_rounds=args.max_tool_rounds)
+            permission_policy = PermissionPolicy(
+                mode=args.permission_mode,
+                approver=prompt_approver,
+            )
+            return DeepSeekPlanner(
+                config,
+                max_tool_rounds=args.max_tool_rounds,
+                permission_policy=permission_policy,
+            )
         except ValueError as exc:
             parser.error(str(exc))
     return StubPlanner()
