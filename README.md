@@ -22,6 +22,12 @@ From the project root:
 python -m drift_agent.cli "帮我写一个简单计划"
 ```
 
+Or start interactive mode:
+
+```powershell
+python -m drift_agent.cli
+```
+
 The CLI uses live DeepSeek mode by default. For local offline tests only:
 
 ```powershell

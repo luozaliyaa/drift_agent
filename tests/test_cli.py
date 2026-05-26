@@ -13,6 +13,27 @@ def test_cli_smoke_success(capsys) -> None:
     assert "trace:" not in captured.out
 
 
+def test_cli_without_task_starts_repl_and_exits(capsys, monkeypatch) -> None:
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    exit_code = main(["--mode", "stub"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "interactive mode" in captured.out
+
+
+def test_cli_repl_runs_task_then_exits(capsys, monkeypatch) -> None:
+    inputs = iter(["write tests", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    exit_code = main(["--mode", "stub"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "final: Completed: write tests" in captured.out
+
+
 def test_cli_trace_can_be_printed(capsys) -> None:
     exit_code = main(["write tests", "--mode", "stub", "--trace"])
 

@@ -13,7 +13,11 @@ from drift_agent.loop import AgentLoop, StubPlanner
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the s01 drift agent with DeepSeek.")
-    parser.add_argument("task", help="Task or prompt for the agent loop.")
+    parser.add_argument(
+        "task",
+        nargs="?",
+        help="Task or prompt for the agent loop. Omit to start interactive mode.",
+    )
     parser.add_argument(
         "--max-steps",
         type=int,
@@ -46,17 +50,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    stepper = build_stepper(args, parser)
+    if not args.task:
+        return run_repl(args, stepper)
+    return run_task(args.task, args, stepper)
+
+
+def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
     if args.mode == "live":
         config = load_deepseek_config()
         try:
-            stepper = DeepSeekPlanner(config, max_tool_rounds=args.max_tool_rounds)
+            return DeepSeekPlanner(config, max_tool_rounds=args.max_tool_rounds)
         except ValueError as exc:
             parser.error(str(exc))
-    else:
-        stepper = StubPlanner()
+    return StubPlanner()
 
+
+def run_repl(args: argparse.Namespace, stepper) -> int:
+    print("drift-agent interactive mode. Type q, exit, or an empty line to quit.")
+    exit_code = 0
+    while True:
+        try:
+            task = input("drift-agent> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return exit_code
+
+        if task.lower() in {"", "q", "quit", "exit"}:
+            return exit_code
+
+        exit_code = run_task(task, args, stepper)
+        print()
+
+
+def run_task(task: str, args: argparse.Namespace, stepper) -> int:
     loop = AgentLoop(stepper=stepper, max_steps=args.max_steps)
-    state = loop.run(args.task)
+    state = loop.run(task)
 
     print(f"status: {state.status.value}")
     if state.final_output:
