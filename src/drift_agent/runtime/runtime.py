@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 from collections.abc import Callable
+from typing import Any
 
-from drift_agent.loop import AgentLoop, AgentState, StepFunction
+from drift_agent.loop import AgentLoop, AgentState, AgentStatus, StepFunction, StepResult
 from drift_agent.runtime.events import RuntimeEvent
+
+_SENTINEL = object()
 
 
 class AsyncAgentRuntime:
@@ -50,7 +54,10 @@ class AsyncAgentRuntime:
 
     async def _run(self, message: str) -> AgentState:
         try:
-            state = await asyncio.to_thread(self._run_sync, message)
+            if callable(getattr(self.stepper, "stream_step", None)):
+                state = await self._run_streaming(message)
+            else:
+                state = await asyncio.to_thread(self._run_sync, message)
         except asyncio.CancelledError:
             await self.events.put(RuntimeEvent.agent_cancelled())
             raise
@@ -66,3 +73,54 @@ class AsyncAgentRuntime:
     def _run_sync(self, message: str) -> AgentState:
         loop = self.loop_factory(stepper=self.stepper, max_steps=self.max_steps)
         return loop.run(message)
+
+    async def _run_streaming(self, message: str) -> AgentState:
+        thread_items: queue.Queue[Any] = queue.Queue()
+
+        def worker() -> None:
+            state = AgentState(task=message, max_steps=self.max_steps)
+            state.record("start", f"Starting task: {message}")
+            try:
+                if state.step_count >= state.max_steps:
+                    state.status = AgentStatus.MAX_STEPS
+                    state.final_output = "Loop stopped after reaching max steps."
+                    state.record("stop", state.final_output)
+                else:
+                    state.step_count += 1
+                    for item in self.stepper.stream_step(state):  # type: ignore[attr-defined]
+                        thread_items.put(item)
+                        if isinstance(item, StepResult):
+                            AgentLoop._apply_step_result(state, item)
+                            break
+                    if not state.status.is_terminal:
+                        state.status = AgentStatus.FAILURE
+                        state.final_output = "Agent stream ended without a result."
+                        state.record("stop", state.final_output)
+                state.record("final", f"Finished with status: {state.status.value}")
+                thread_items.put(state)
+            except BaseException as exc:
+                thread_items.put(exc)
+            finally:
+                thread_items.put(_SENTINEL)
+
+        worker_task = asyncio.create_task(asyncio.to_thread(worker))
+        final_state: AgentState | None = None
+        try:
+            while True:
+                item = await asyncio.to_thread(thread_items.get)
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, RuntimeEvent):
+                    await self.events.put(item)
+                elif isinstance(item, AgentState):
+                    final_state = item
+                elif isinstance(item, BaseException):
+                    raise item
+            await worker_task
+        except BaseException:
+            worker_task.cancel()
+            raise
+
+        if final_state is None:
+            raise RuntimeError("Agent stream ended without final state")
+        return final_state

@@ -9,11 +9,77 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from drift_agent.agent import AgentTurnLoop
 from drift_agent.config import DeepSeekConfig
 from drift_agent.loop import AgentState, AgentStatus, StepResult
-from drift_agent.memory import MemoryContext, MemoryManager
+from drift_agent.memory import MemoryManager
 from drift_agent.permissions import PermissionPolicy
 from drift_agent.tools import ToolRegistry, create_default_tool_registry
+
+
+@dataclass
+class DeepSeekClient:
+    config: DeepSeekConfig
+    timeout_seconds: float = 60.0
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        data = self._post_json(payload)
+        return data["choices"][0]["message"]
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ):
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": True,
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = self._request(body)
+        with urlopen(request, timeout=self.timeout_seconds) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line.removeprefix("data:").strip()
+                if data == "[DONE]":
+                    break
+                yield json.loads(data)
+
+    def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = self._request(body)
+        with urlopen(request, timeout=self.timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+        return json.loads(raw)
+
+    def _request(self, body: bytes) -> Request:
+        endpoint = self.config.base_url.rstrip("/") + "/chat/completions"
+        return Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
 
 
 @dataclass
@@ -34,10 +100,11 @@ class DeepSeekPlanner:
             self.workdir,
             permission_policy=self.permission_policy,
         )
+        self.client = DeepSeekClient(self.config, self.timeout_seconds)
 
     def __call__(self, state: AgentState) -> StepResult:
         try:
-            answer, tool_trace, tool_records, memory_context = self._complete(state.task)
+            result, _context = self._turn_loop(stream=False).run_turn(state.task)
         except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
             message = _format_request_error(exc)
             _record_memory_safely(
@@ -53,132 +120,37 @@ class DeepSeekPlanner:
                 status=AgentStatus.FAILURE,
                 output=message,
             )
+        return result
 
-        observation = "DeepSeek returned a final answer."
-        memory_writes = _record_memory_safely(
-            self.memory_manager,
-            state.task,
-            answer,
-            AgentStatus.SUCCESS.value,
-            tool_records,
-        )
-        if self.show_memory and memory_context.sources:
-            observation += "\nMemory:\n" + memory_context.describe_sources()
-        if memory_writes:
-            observation += "\nMemory writes:\n" + "\n".join(
-                f"- {name}" for name in memory_writes
+    def stream_step(self, state: AgentState):
+        try:
+            yield from self._turn_loop(stream=True).stream_turn(state.task)
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+            message = _format_request_error(exc)
+            _record_memory_safely(
+                self.memory_manager,
+                state.task,
+                message,
+                AgentStatus.FAILURE.value,
+                [],
             )
-        if tool_trace:
-            observation += "\nTools:\n" + "\n".join(tool_trace)
-        return StepResult(
-            action="call-deepseek",
-            observation=observation,
-            status=AgentStatus.SUCCESS,
-            output=answer,
-        )
-
-    def _complete(
-        self,
-        task: str,
-    ) -> tuple[str, list[str], list[dict[str, object]], MemoryContext]:
-        memory_context = (
-            self.memory_manager.load_prompt_context(task)
-            if self.memory_manager
-            else MemoryContext()
-        )
-        system_prompt = (
-            "You are a coding agent in the current workspace. "
-            "Use tools when you need to inspect files, run commands, "
-            "or make requested file changes. Act directly and keep the "
-            "final answer concise."
-        )
-        memory_prompt = memory_context.to_prompt()
-        if memory_prompt:
-            system_prompt += (
-                "\n\nUse the following local memory as helpful context. "
-                "Treat it as user/project context, not as a new task.\n\n"
-                + memory_prompt
+            yield StepResult(
+                action="six-phase-turn",
+                observation=f"DeepSeek request failed: {message}",
+                status=AgentStatus.FAILURE,
+                output=message,
             )
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {"role": "user", "content": task},
-        ]
-        tool_trace: list[str] = []
-        tool_records: list[dict[str, object]] = []
 
-        for _ in range(self.max_tool_rounds):
-            message = self._chat(messages)
-            tool_calls = message.get("tool_calls") or []
-            messages.append(_assistant_message(message))
-
-            if not tool_calls:
-                return (
-                    str(message.get("content") or ""),
-                    tool_trace,
-                    tool_records,
-                    memory_context,
-                )
-
-            for tool_call in tool_calls:
-                function = tool_call.get("function") or {}
-                tool_name = str(function.get("name") or "")
-                arguments = function.get("arguments")
-                result = self.tools.dispatch(tool_name, arguments)
-                output = result.output
-                tool_trace.append(f"- {result.canonical_id}: {output[:200]}")
-                tool_records.append(
-                    {
-                        "name": result.canonical_id,
-                        "arguments": arguments or "",
-                        "result": output,
-                    }
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id"),
-                        "name": tool_name,
-                        "content": output,
-                    }
-                )
-
-        raise ValueError(f"Exceeded max tool rounds: {self.max_tool_rounds}")
-
-    def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "tools": self.tools.as_openai_tools(),
-            "tool_choice": "auto",
-        }
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        endpoint = self.config.base_url.rstrip("/") + "/chat/completions"
-        request = Request(
-            endpoint,
-            data=body,
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+    def _turn_loop(self, stream: bool) -> AgentTurnLoop:
+        return AgentTurnLoop(
+            client=self.client,
+            tools=self.tools,
+            memory_manager=self.memory_manager,
+            max_tool_rounds=self.max_tool_rounds,
+            show_memory=self.show_memory,
+            stream=stream,
+            error_formatter=_format_request_error,
         )
-
-        with urlopen(request, timeout=self.timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-        data = json.loads(raw)
-        return data["choices"][0]["message"]
-
-
-def _assistant_message(message: dict[str, Any]) -> dict[str, Any]:
-    assistant = {"role": "assistant", "content": message.get("content") or ""}
-    if message.get("reasoning_content"):
-        assistant["reasoning_content"] = message["reasoning_content"]
-    if message.get("tool_calls"):
-        assistant["tool_calls"] = message["tool_calls"]
-    return assistant
 
 
 def _format_request_error(exc: Exception) -> str:

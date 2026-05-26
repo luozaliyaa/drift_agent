@@ -15,6 +15,9 @@ class RuntimeEventType(str, Enum):
     AGENT_FINISHED = "agent_finished"
     AGENT_FAILED = "agent_failed"
     AGENT_CANCELLED = "agent_cancelled"
+    PHASE_STARTED = "phase_started"
+    PHASE_FINISHED = "phase_finished"
+    MODEL_DELTA = "model_delta"
     TOOL_STARTED = "tool_started"
     TOOL_FINISHED = "tool_finished"
     PERMISSION_REQUIRED = "permission_required"
@@ -48,3 +51,39 @@ class RuntimeEvent:
     @classmethod
     def agent_cancelled(cls) -> "RuntimeEvent":
         return cls(RuntimeEventType.AGENT_CANCELLED, "Agent run cancelled.")
+
+    @classmethod
+    def phase_started(cls, phase: str) -> "RuntimeEvent":
+        return cls(RuntimeEventType.PHASE_STARTED, phase, payload={"phase": phase})
+
+    @classmethod
+    def phase_finished(cls, phase: str) -> "RuntimeEvent":
+        return cls(RuntimeEventType.PHASE_FINISHED, phase, payload={"phase": phase})
+
+    @classmethod
+    def model_delta(cls, text: str) -> "RuntimeEvent":
+        return cls(RuntimeEventType.MODEL_DELTA, text, payload={"delta": text})
+
+    @classmethod
+    def tool_started(cls, name: str, arguments: object = "") -> "RuntimeEvent":
+        return cls(
+            RuntimeEventType.TOOL_STARTED,
+            name,
+            payload={"name": name, "arguments": arguments},
+        )
+
+    @classmethod
+    def tool_finished(cls, name: str, output: str, error: bool = False) -> "RuntimeEvent":
+        return cls(
+            RuntimeEventType.TOOL_FINISHED,
+            name,
+            payload={"name": name, "output": output, "error": error},
+        )
+
+    @classmethod
+    def memory_loaded(cls, sources: list[str]) -> "RuntimeEvent":
+        return cls(
+            RuntimeEventType.MEMORY_LOADED,
+            ", ".join(sources),
+            payload={"sources": sources},
+        )

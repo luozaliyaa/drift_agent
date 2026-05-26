@@ -13,6 +13,7 @@ from drift_agent.runtime.events import RuntimeEvent, RuntimeEventType
 class TerminalRenderer:
     trace: bool = False
     stdout: TextIO | None = None
+    _saw_model_delta: bool = False
 
     async def render_until_done(self, events: asyncio.Queue[RuntimeEvent]) -> int:
         exit_code = 1
@@ -40,8 +41,12 @@ class TerminalRenderer:
 
         if event.type is RuntimeEventType.AGENT_FINISHED and event.state is not None:
             state = event.state
+            saw_model_delta = self._saw_model_delta
+            self._saw_model_delta = False
+            if saw_model_delta:
+                print(file=stream)
             print(f"status: {state.status.value}", file=stream)
-            if state.final_output:
+            if state.final_output and (self.trace or not saw_model_delta):
                 print(f"final: {state.final_output}", file=stream)
             if self.trace:
                 print("trace:", file=stream)
@@ -63,6 +68,14 @@ class TerminalRenderer:
 
         if event.type is RuntimeEventType.SYSTEM_NOTICE:
             print(event.message, file=stream)
+            return 0
+
+        if event.type is RuntimeEventType.MODEL_DELTA:
+            if self.trace:
+                print(f"{event.type.value}: {event.message}", file=stream)
+            else:
+                print(event.message, end="", flush=True, file=stream)
+                self._saw_model_delta = True
             return 0
 
         if self.trace:

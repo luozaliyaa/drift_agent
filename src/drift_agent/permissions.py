@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -98,6 +99,10 @@ class PermissionPolicy:
         if tool_name == "bash":
             command = str(arguments.get("command", "")).lower()
             for pattern in ASK_COMMAND_PATTERNS:
+                if pattern == ">":
+                    if _has_output_redirect(command):
+                        return f"Potentially destructive shell command: {pattern}"
+                    continue
                 if pattern in command:
                     return f"Potentially destructive shell command: {pattern}"
         return None
@@ -113,6 +118,15 @@ def prompt_approver(tool_name: str, arguments: dict[str, Any], reason: str) -> b
 
 
 def _deny_without_tty(tool_name: str, arguments: dict[str, Any], reason: str) -> bool:
+    return False
+
+
+def _has_output_redirect(command: str) -> bool:
+    for match in re.finditer(r"[0-9]*>{1,2}", command):
+        end = match.end()
+        if command[end : end + 1] == "&" and command[end + 1 : end + 2].isdigit():
+            continue
+        return True
     return False
 
 

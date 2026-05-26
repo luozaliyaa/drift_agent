@@ -55,6 +55,35 @@ async def _assert_async_runtime_emits_failed_event() -> None:
     assert events[-1].message == "boom"
 
 
+def test_async_runtime_forwards_streaming_step_events() -> None:
+    asyncio.run(_assert_async_runtime_forwards_streaming_step_events())
+
+
+async def _assert_async_runtime_forwards_streaming_step_events() -> None:
+    class StreamingStepper:
+        def stream_step(self, state: AgentState):
+            yield RuntimeEvent.model_delta("hi")
+            yield StepResult(
+                action="finish",
+                observation="streamed",
+                status=AgentStatus.SUCCESS,
+                output="hi",
+            )
+
+    runtime = AsyncAgentRuntime(stepper=StreamingStepper())
+
+    state = await runtime.run_once("hello")
+    events = [await runtime.events.get() for _ in range(4)]
+
+    assert state.status is AgentStatus.SUCCESS
+    assert [event.type for event in events] == [
+        RuntimeEventType.USER_MESSAGE,
+        RuntimeEventType.AGENT_STARTED,
+        RuntimeEventType.MODEL_DELTA,
+        RuntimeEventType.AGENT_FINISHED,
+    ]
+
+
 def test_async_runtime_cancel_current_emits_cancelled_event() -> None:
     asyncio.run(_assert_async_runtime_cancel_current_emits_cancelled_event())
 

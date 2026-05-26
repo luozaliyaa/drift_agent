@@ -95,3 +95,27 @@ def test_workspace_tools_hard_deny_wins_over_allow_mode(tmp_path) -> None:
     output = tools.dispatch_json("bash", {"command": "sudo shutdown now"})
 
     assert output.startswith("Permission denied:")
+
+
+def test_permission_policy_allows_stderr_merge_without_prompt(tmp_path) -> None:
+    approvals = []
+
+    def approve(tool_name, arguments, reason):
+        approvals.append((tool_name, arguments, reason))
+        return False
+
+    policy = PermissionPolicy(tmp_path, mode="ask", approver=approve)
+
+    decision = policy.check("bash", {"command": "curl example.test 2>&1"})
+
+    assert decision.action is PermissionAction.ALLOW
+    assert approvals == []
+
+
+def test_permission_policy_still_asks_for_file_redirect(tmp_path) -> None:
+    policy = PermissionPolicy(tmp_path, mode="ask", approver=lambda *args: False)
+
+    decision = policy.check("bash", {"command": "echo hello > note.txt"})
+
+    assert decision.action is PermissionAction.DENY
+    assert ">" in decision.reason
