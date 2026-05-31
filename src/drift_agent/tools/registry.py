@@ -103,7 +103,7 @@ def create_default_tool_registry(
     registry = ToolRegistry()
     registry.register_provider(WorkspaceToolProvider(workdir, permission_policy))
     if enable_web_tools:
-        registry.register_provider(WebToolProvider(enabled=False))
+        registry.register_provider(WebToolProvider(enabled=True))
     if enable_mcp_tools:
         registry.register_provider(MCPToolProvider(enabled=False))
     return registry

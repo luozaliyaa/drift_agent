@@ -71,12 +71,21 @@ def test_registry_rejects_duplicate_canonical_ids(tmp_path) -> None:
         raise AssertionError("Expected duplicate tool id failure")
 
 
-def test_disabled_web_provider_is_not_exposed_by_default() -> None:
-    registry = create_default_tool_registry(enable_web_tools=True)
+def test_web_provider_is_not_exposed_by_default() -> None:
+    registry = create_default_tool_registry()
 
     names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
 
     assert "web__fetch" not in names
+
+
+def test_web_fetch_is_exposed_when_enabled() -> None:
+    registry = create_default_tool_registry(enable_web_tools=True)
+
+    names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
+
+    assert "web__fetch" in names
+    assert "web__search" not in names
 
 
 def test_disabled_stub_providers_return_recoverable_errors() -> None:
