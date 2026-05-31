@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 from drift_agent.agent import AgentTurnLoop
 from drift_agent.config import DeepSeekConfig
 from drift_agent.loop import AgentState, AgentStatus, StepResult
-from drift_agent.memory import MemoryManager
+from drift_agent.memory import MemoryLLM, MemoryManager
 from drift_agent.permissions import PermissionPolicy
 from drift_agent.tools import ToolRegistry, create_default_tool_registry
 
@@ -96,11 +96,17 @@ class DeepSeekPlanner:
     def __post_init__(self) -> None:
         if not self.config.api_key:
             raise ValueError("DEEPSEEK_API_KEY is required for live model mode")
+        self.client = DeepSeekClient(self.config, self.timeout_seconds)
+        if self.memory_manager is not None and self.memory_manager.llm is None:
+            self.memory_manager.configure_llm(MemoryLLM(self.client))
+            if self.memory_manager.optimize_now:
+                self.memory_manager.optimize(force=True)
+                self.memory_manager.optimize_now = False
         self.tools = self.tool_registry or create_default_tool_registry(
             self.workdir,
             permission_policy=self.permission_policy,
+            memory_manager=self.memory_manager,
         )
-        self.client = DeepSeekClient(self.config, self.timeout_seconds)
 
     def __call__(self, state: AgentState) -> StepResult:
         try:

@@ -76,6 +76,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print memory sources injected into the model prompt.",
     )
     parser.add_argument(
+        "--memory-optimizer-interval-seconds",
+        type=int,
+        default=64800,
+        help="Seconds between automatic memory optimizer runs.",
+    )
+    parser.add_argument(
+        "--memory-keep-count",
+        type=int,
+        default=8,
+        help="Recent turns to keep out of full consolidation.",
+    )
+    parser.add_argument(
+        "--memory-consolidation-min",
+        type=int,
+        default=None,
+        help="Minimum eligible turns before memory consolidation runs.",
+    )
+    parser.add_argument(
+        "--memory-optimize-now",
+        action="store_true",
+        help="Force a memory optimizer pass during this run.",
+    )
+    parser.add_argument(
         "--runtime",
         choices=["async", "sync"],
         default="async",
@@ -110,10 +133,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=args.permission_mode,
             approver=prompt_approver,
         )
+        memory_manager = None
+        if args.memory == "on":
+            memory_manager = MemoryManager(
+                memory_dir=args.memory_dir,
+                session_id=args.session,
+                keep_count=args.memory_keep_count,
+                consolidation_min=args.memory_consolidation_min,
+                optimizer_interval_seconds=args.memory_optimizer_interval_seconds,
+                optimize_now=args.memory_optimize_now,
+            )
         registry = create_default_tool_registry(
             permission_policy=permission_policy,
             enable_web_tools=args.enable_web_tools,
             enable_mcp_tools=args.enable_mcp_tools,
+            memory_manager=memory_manager,
         )
         for info in registry.list_tool_info():
             print(
@@ -199,11 +233,16 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
                 memory_manager = MemoryManager(
                     memory_dir=args.memory_dir,
                     session_id=args.session,
+                    keep_count=args.memory_keep_count,
+                    consolidation_min=args.memory_consolidation_min,
+                    optimizer_interval_seconds=args.memory_optimizer_interval_seconds,
+                    optimize_now=args.memory_optimize_now,
                 )
             tool_registry = create_default_tool_registry(
                 permission_policy=permission_policy,
                 enable_web_tools=args.enable_web_tools,
                 enable_mcp_tools=args.enable_mcp_tools,
+                memory_manager=memory_manager,
             )
             return DeepSeekPlanner(
                 config,

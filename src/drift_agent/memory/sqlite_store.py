@@ -94,6 +94,116 @@ class SQLiteContextStore:
         ]
         return summary, recent
 
+    def load_recent_turns(
+        self,
+        session_id: str,
+        recent_limit: int = 5,
+    ) -> list[tuple[str, str]]:
+        _, recent = self.load_session_context(session_id, recent_limit)
+        return recent
+
+    def load_unconsolidated_turns(
+        self,
+        session_id: str,
+        keep_count: int,
+    ) -> list[dict[str, object]]:
+        last_id = int(self.get_state(f"{session_id}:last_consolidated_turn_id", "0"))
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT id, user_prompt, assistant_answer, status, created_at
+                FROM turns
+                WHERE session_id = ? AND id > ?
+                ORDER BY id ASC
+                """,
+                (session_id, last_id),
+            ).fetchall()
+        if len(rows) <= keep_count:
+            return []
+        eligible = rows[: max(0, len(rows) - keep_count)]
+        return [
+            {
+                "id": int(row["id"]),
+                "user_prompt": str(row["user_prompt"]),
+                "assistant_answer": str(row["assistant_answer"]),
+                "status": str(row["status"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in eligible
+        ]
+
+    def mark_turns_consolidated(self, session_id: str, turn_ids: list[int]) -> None:
+        if not turn_ids:
+            return
+        self.set_state(f"{session_id}:last_consolidated_turn_id", str(max(turn_ids)))
+
+    def has_consolidation_write(self, source_ref: tuple[str, ...], kind: str) -> bool:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT 1 FROM consolidation_writes
+                WHERE source_ref_json = ? AND kind = ?
+                """,
+                (json_dumps(list(source_ref)), kind),
+            ).fetchone()
+        return row is not None
+
+    def record_consolidation_write(
+        self,
+        source_ref: tuple[str, ...],
+        kind: str,
+    ) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO consolidation_writes(
+                    source_ref_json, kind, created_at
+                )
+                VALUES (?, ?, ?)
+                """,
+                (json_dumps(list(source_ref)), kind, utc_now()),
+            )
+
+    def get_state(self, key: str, default: str = "") -> str:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT value FROM memory_state WHERE key = ?",
+                (key,),
+            ).fetchone()
+        if row is None:
+            return default
+        return str(row["value"])
+
+    def set_state(self, key: str, value: str) -> None:
+        now = utc_now()
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO memory_state(key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, value, now),
+            )
+
+    def optimizer_due(self, interval_seconds: int) -> bool:
+        last = self.get_state("optimizer:last_run_at")
+        if not last:
+            return True
+        try:
+            last_dt = datetime.fromisoformat(last)
+        except ValueError:
+            return True
+        now = datetime.now(UTC)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=UTC)
+        return (now - last_dt).total_seconds() >= interval_seconds
+
+    def mark_optimizer_ran(self) -> None:
+        self.set_state("optimizer:last_run_at", utc_now())
+
     def update_summary(self, con: sqlite3.Connection, session_id: str) -> None:
         rows = con.execute(
             """
@@ -154,6 +264,19 @@ class SQLiteContextStore:
                     memory_name TEXT NOT NULL,
                     event_type TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS consolidation_writes (
+                    source_ref_json TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(source_ref_json, kind)
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )

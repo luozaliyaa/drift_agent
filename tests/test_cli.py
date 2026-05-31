@@ -114,6 +114,10 @@ def test_cli_passes_memory_options_to_live_planner(capsys, monkeypatch) -> None:
         def __init__(self, **kwargs):
             assert kwargs["memory_dir"] == "custom-memory"
             assert kwargs["session_id"] == "project-a"
+            assert kwargs["keep_count"] == 4
+            assert kwargs["consolidation_min"] == 2
+            assert kwargs["optimizer_interval_seconds"] == 30
+            assert kwargs["optimize_now"] is True
 
     class FakeDeepSeekPlanner:
         def __init__(self, config, **kwargs):
@@ -143,6 +147,13 @@ def test_cli_passes_memory_options_to_live_planner(capsys, monkeypatch) -> None:
             "--session",
             "project-a",
             "--show-memory",
+            "--memory-keep-count",
+            "4",
+            "--memory-consolidation-min",
+            "2",
+            "--memory-optimizer-interval-seconds",
+            "30",
+            "--memory-optimize-now",
         ]
     )
 

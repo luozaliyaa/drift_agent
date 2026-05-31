@@ -100,9 +100,17 @@ python -m drift_agent.cli "Try to edit README.md" --permission-mode deny
 
 Memory is enabled by default in live mode.
 
-- `.memory/MEMORY.md`: Markdown memory index injected every turn
-- `.memory/items/*.md`: long-term Markdown memories
-- `.memory/context.sqlite3`: SQLite session context and tool-call history
+- `.memory/SELF.md`: compact agent self model injected every turn
+- `.memory/MEMORY.md`: compact long-term memory injected every turn
+- `.memory/RECENT_CONTEXT.md`: compressed recent context plus recent turn window
+- `.memory/HISTORY.md`: append-only timeline written by consolidation
+- `.memory/PENDING.md`: pending facts waiting for optimizer archival
+- `.memory/journal/YYYY-MM-DD.md`: daily history mirror
+- `.memory/context.sqlite3`: SQLite session context and consolidation metadata
+- `.memory/memory2.sqlite3`: local semantic memory records and embeddings
+
+Live mode uses DeepSeek for consolidation and optimization. Test/stub mode can
+still use the conservative local extraction fallback.
 
 Useful options:
 
@@ -111,7 +119,12 @@ python -m drift_agent.cli "记住我喜欢用 tabs 缩进" --show-memory
 python -m drift_agent.cli "继续刚才的任务" --session project-a
 python -m drift_agent.cli "临时问答，不使用记忆" --memory off
 python -m drift_agent.cli "使用自定义记忆目录" --memory-dir .my-memory
+python -m drift_agent.cli "optimize memory now" --memory-optimize-now
+python -m drift_agent.cli "short consolidation window" --memory-keep-count 4 --memory-consolidation-min 2
 ```
+
+When memory is enabled, live mode also exposes `memory.remember`,
+`memory.recall`, and `memory.forget` as model-callable tools.
 
 ## Runtime Events
 
