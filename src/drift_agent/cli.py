@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from collections.abc import Sequence
 
@@ -12,9 +13,11 @@ from drift_agent.deepseek import DeepSeekPlanner
 from drift_agent.loop import AgentLoop, StubPlanner
 from drift_agent.memory import MemoryManager
 from drift_agent.permissions import PermissionPolicy, prompt_approver
+from drift_agent.proactive import ProactiveAgentTick, ProactiveConfig
 from drift_agent.runtime import AsyncAgentRuntime
 from drift_agent.runtime.input import AsyncInputReader
 from drift_agent.runtime.renderer import TerminalRenderer
+from drift_agent.runtime.scheduler import IdlePushScheduler
 from drift_agent.tools import create_default_tool_registry
 
 
@@ -119,6 +122,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List active model-callable tools and exit.",
     )
+    parser.add_argument(
+        "--proactive",
+        choices=["on", "off"],
+        default="off",
+        help="Enable or disable terminal proactive notices in async REPL mode.",
+    )
+    parser.add_argument(
+        "--proactive-profile",
+        choices=["daily", "quiet", "dev_verify"],
+        default="daily",
+        help="Adaptive proactive tick profile.",
+    )
+    parser.add_argument(
+        "--proactive-context",
+        default="PROACTIVE_CONTEXT.md",
+        help="Markdown rules file for proactive decisions.",
+    )
+    parser.add_argument(
+        "--proactive-sources",
+        default="proactive_sources.json",
+        help="JSON source file for local proactive events.",
+    )
+    parser.add_argument(
+        "--proactive-once",
+        action="store_true",
+        help="Run one proactive tick and exit when no task is provided.",
+    )
     return parser
 
 
@@ -166,11 +196,31 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 async def run_async_cli(args: argparse.Namespace, stepper) -> int:
-    runtime = AsyncAgentRuntime(stepper=stepper, max_steps=args.max_steps)
     renderer = TerminalRenderer(trace=args.trace)
+    scheduler = build_proactive_scheduler(args, stepper)
+    runtime = AsyncAgentRuntime(
+        stepper=stepper,
+        max_steps=args.max_steps,
+        scheduler=scheduler,
+    )
+    if args.proactive_once and not args.task:
+        return await run_async_proactive_once(runtime, renderer)
     if not args.task:
         return await run_async_repl(args, runtime, renderer)
     return await run_async_task(args.task, runtime, renderer)
+
+
+async def run_async_proactive_once(
+    runtime: AsyncAgentRuntime,
+    renderer: TerminalRenderer,
+) -> int:
+    if runtime.scheduler is None:
+        return 0
+    await runtime.scheduler.run_once()
+    exit_code = 0
+    while not runtime.events.empty():
+        exit_code = renderer.render(await runtime.events.get())
+    return exit_code
 
 
 async def run_async_task(
@@ -193,31 +243,49 @@ async def run_async_repl(
     renderer: TerminalRenderer,
 ) -> int:
     print("drift-agent async interactive mode. Type q, exit, or an empty line to quit.")
+    if runtime.scheduler is not None and args.proactive == "on":
+        await runtime.scheduler.start()
     reader = AsyncInputReader()
     exit_code = 0
-    while True:
-        try:
-            task = (await reader.read()).strip()
-        except KeyboardInterrupt:
-            if runtime.busy:
+    try:
+        while True:
+            render_pending_system_notices(runtime, renderer)
+            notice_task = None
+            if runtime.scheduler is not None and args.proactive == "on":
+                notice_task = asyncio.create_task(
+                    render_idle_system_notices(runtime, renderer)
+                )
+            try:
+                task = (await reader.read()).strip()
+            except KeyboardInterrupt:
+                if runtime.busy:
+                    await runtime.cancel_current()
+                    exit_code = await renderer.render_until_done(runtime.events)
+                    continue
+                print()
+                return exit_code
+            except EOFError:
+                print()
+                return exit_code
+            finally:
+                if notice_task is not None:
+                    notice_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await notice_task
+
+            if task.lower() in {"", "q", "quit", "exit"}:
+                return exit_code
+
+            try:
+                exit_code = await run_async_task(task, runtime, renderer)
+            except KeyboardInterrupt:
                 await runtime.cancel_current()
                 exit_code = await renderer.render_until_done(runtime.events)
-                continue
             print()
-            return exit_code
-        except EOFError:
-            print()
-            return exit_code
-
-        if task.lower() in {"", "q", "quit", "exit"}:
-            return exit_code
-
-        try:
-            exit_code = await run_async_task(task, runtime, renderer)
-        except KeyboardInterrupt:
-            await runtime.cancel_current()
-            exit_code = await renderer.render_until_done(runtime.events)
-        print()
+    finally:
+        if runtime.scheduler is not None:
+            await runtime.scheduler.stop()
+        render_pending_system_notices(runtime, renderer)
 
 
 def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
@@ -255,6 +323,59 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
         except ValueError as exc:
             parser.error(str(exc))
     return StubPlanner()
+
+
+def build_proactive_scheduler(
+    args: argparse.Namespace,
+    stepper,
+) -> IdlePushScheduler | None:
+    if args.proactive != "on" and not args.proactive_once:
+        return None
+    config = ProactiveConfig(
+        enabled=True,
+        profile=args.proactive_profile,
+        context_path=args.proactive_context,
+        sources_path=args.proactive_sources,
+    )
+    tick = ProactiveAgentTick(
+        config=config,
+        client=getattr(stepper, "client", None),
+        memory_manager=getattr(stepper, "memory_manager", None),
+    )
+    return IdlePushScheduler(
+        runtime=None,
+        tick=tick.run_once,
+        profile=args.proactive_profile,
+        enabled=True,
+    )
+
+
+def render_pending_system_notices(
+    runtime: AsyncAgentRuntime,
+    renderer: TerminalRenderer,
+) -> None:
+    deferred = []
+    while not runtime.events.empty():
+        event = runtime.events.get_nowait()
+        if event.type.value == "system_notice":
+            renderer.render(event)
+        else:
+            deferred.append(event)
+    for event in deferred:
+        runtime.events.put_nowait(event)
+
+
+async def render_idle_system_notices(
+    runtime: AsyncAgentRuntime,
+    renderer: TerminalRenderer,
+) -> None:
+    while True:
+        event = await runtime.events.get()
+        if event.type.value == "system_notice":
+            renderer.render(event)
+        else:
+            runtime.events.put_nowait(event)
+            await asyncio.sleep(0.05)
 
 
 def run_repl(args: argparse.Namespace, stepper) -> int:

@@ -201,3 +201,59 @@ def test_cli_live_mode_requires_api_key(capsys, monkeypatch) -> None:
     captured = capsys.readouterr()
     assert exit_code == 2
     assert "DEEPSEEK_API_KEY is required" in captured.err
+
+
+def test_cli_proactive_once_emits_terminal_notice(capsys, monkeypatch) -> None:
+    class FakeTick:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_once(self):
+            from drift_agent.proactive.types import ProactiveDecision
+
+            return ProactiveDecision("reply", message="proactive hello")
+
+    monkeypatch.setattr("drift_agent.cli.ProactiveAgentTick", FakeTick)
+
+    exit_code = main(["--mode", "stub", "--proactive-once"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "proactive hello" in captured.out
+
+
+def test_cli_passes_proactive_options_to_scheduler(capsys, monkeypatch) -> None:
+    captured_config = {}
+
+    class FakeTick:
+        def __init__(self, **kwargs):
+            captured_config["config"] = kwargs["config"]
+
+        def run_once(self):
+            from drift_agent.proactive.types import ProactiveDecision
+
+            return ProactiveDecision("skip")
+
+    monkeypatch.setattr("drift_agent.cli.ProactiveAgentTick", FakeTick)
+
+    exit_code = main(
+        [
+            "--mode",
+            "stub",
+            "--proactive-once",
+            "--proactive-profile",
+            "quiet",
+            "--proactive-context",
+            "custom-context.md",
+            "--proactive-sources",
+            "custom-sources.json",
+        ]
+    )
+
+    config = captured_config["config"]
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert config.profile == "quiet"
+    assert str(config.context_path) == "custom-context.md"
+    assert str(config.sources_path) == "custom-sources.json"

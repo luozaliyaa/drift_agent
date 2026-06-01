@@ -131,5 +131,46 @@ When memory is enabled, live mode also exposes `memory.remember`,
 The async runtime emits internal events such as `user_message`, `agent_started`,
 `agent_finished`, and `agent_failed`. Use `--trace` to show them in the terminal.
 
-Future proactive push support will attach to the reserved scheduler interface and
-emit non-blocking system notices while the agent is idle.
+## Proactive Notices
+
+Proactive notices are opt-in. In the first implementation they are terminal
+`system_notice` events only; Telegram/MCP ACK delivery is reserved for a later
+phase.
+
+Run one proactive tick and exit:
+
+```powershell
+python -m drift_agent.cli --mode stub --proactive-once
+```
+
+Enable idle proactive notices in async interactive mode:
+
+```powershell
+python -m drift_agent.cli --proactive on --proactive-profile daily
+```
+
+Useful files:
+
+- `PROACTIVE_CONTEXT.md`: user-maintained rules for what is worth pushing
+- `proactive_sources.json`: local static/file proactive sources
+
+Example `proactive_sources.json`:
+
+```json
+{
+  "sources": [
+    {
+      "type": "static",
+      "channel": "alert",
+      "name": "local",
+      "events": [
+        {
+          "event_id": "demo-alert",
+          "title": "Build finished",
+          "content": "The local build finished successfully."
+        }
+      ]
+    }
+  ]
+}
+```

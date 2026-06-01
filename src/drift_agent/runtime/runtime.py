@@ -9,6 +9,7 @@ from typing import Any
 
 from drift_agent.loop import AgentLoop, AgentState, AgentStatus, StepFunction, StepResult
 from drift_agent.runtime.events import RuntimeEvent
+from drift_agent.runtime.scheduler import IdlePushScheduler
 
 _SENTINEL = object()
 
@@ -19,12 +20,16 @@ class AsyncAgentRuntime:
         stepper: StepFunction,
         max_steps: int = 1,
         loop_factory: Callable[..., AgentLoop] = AgentLoop,
+        scheduler: IdlePushScheduler | None = None,
     ) -> None:
         self.stepper = stepper
         self.max_steps = max_steps
         self.loop_factory = loop_factory
         self.events: asyncio.Queue[RuntimeEvent] = asyncio.Queue()
         self._current_task: asyncio.Task[AgentState] | None = None
+        self.scheduler = scheduler
+        if self.scheduler is not None:
+            self.scheduler.runtime = self
 
     @property
     def busy(self) -> bool:
@@ -33,6 +38,9 @@ class AsyncAgentRuntime:
     async def submit(self, message: str) -> asyncio.Task[AgentState]:
         if self.busy:
             raise RuntimeError("Agent is already running")
+        if self.scheduler is not None:
+            self.scheduler.on_user_activity()
+            self.scheduler.on_agent_busy()
         await self.events.put(RuntimeEvent.user_message(message))
         await self.events.put(RuntimeEvent.agent_started(message))
         task = asyncio.create_task(self._run(message))
@@ -69,6 +77,8 @@ class AsyncAgentRuntime:
             return state
         finally:
             self._current_task = None
+            if self.scheduler is not None:
+                self.scheduler.on_agent_idle()
 
     def _run_sync(self, message: str) -> AgentState:
         loop = self.loop_factory(stepper=self.stepper, max_steps=self.max_steps)
