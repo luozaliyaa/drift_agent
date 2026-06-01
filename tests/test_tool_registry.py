@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from drift_agent.memory import MemoryManager
 from drift_agent.permissions import PermissionPolicy
 from drift_agent.tools import (
     MCPToolProvider,
@@ -77,6 +78,22 @@ def test_web_provider_is_not_exposed_by_default() -> None:
     names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
 
     assert "web__fetch" not in names
+
+
+def test_memory_provider_is_exposed_when_memory_enabled(tmp_path) -> None:
+    memory = MemoryManager(tmp_path / ".memory")
+    registry = create_default_tool_registry(memory_manager=memory)
+
+    names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
+    result = registry.dispatch(
+        "memory__remember",
+        {"content": "User prefers concise updates.", "memory_type": "preference"},
+    )
+
+    assert "memory__remember" in names
+    assert "memory__recall" in names
+    assert "memory__forget" in names
+    assert json.loads(result.output)["memory_type"] == "preference"
 
 
 def test_web_fetch_is_exposed_when_enabled() -> None:

@@ -100,9 +100,17 @@ python -m drift_agent.cli "Try to edit README.md" --permission-mode deny
 
 Memory is enabled by default in live mode.
 
-- `.memory/MEMORY.md`: Markdown memory index injected every turn
-- `.memory/items/*.md`: long-term Markdown memories
-- `.memory/context.sqlite3`: SQLite session context and tool-call history
+- `.memory/SELF.md`: compact agent self model injected every turn
+- `.memory/MEMORY.md`: compact long-term memory injected every turn
+- `.memory/RECENT_CONTEXT.md`: compressed recent context plus recent turn window
+- `.memory/HISTORY.md`: append-only timeline written by consolidation
+- `.memory/PENDING.md`: pending facts waiting for optimizer archival
+- `.memory/journal/YYYY-MM-DD.md`: daily history mirror
+- `.memory/context.sqlite3`: SQLite session context and consolidation metadata
+- `.memory/memory2.sqlite3`: local semantic memory records and embeddings
+
+Live mode uses DeepSeek for consolidation and optimization. Test/stub mode can
+still use the conservative local extraction fallback.
 
 Useful options:
 
@@ -111,12 +119,95 @@ python -m drift_agent.cli "记住我喜欢用 tabs 缩进" --show-memory
 python -m drift_agent.cli "继续刚才的任务" --session project-a
 python -m drift_agent.cli "临时问答，不使用记忆" --memory off
 python -m drift_agent.cli "使用自定义记忆目录" --memory-dir .my-memory
+python -m drift_agent.cli "optimize memory now" --memory-optimize-now
+python -m drift_agent.cli "short consolidation window" --memory-keep-count 4 --memory-consolidation-min 2
 ```
+
+When memory is enabled, live mode also exposes `memory.remember`,
+`memory.recall`, and `memory.forget` as model-callable tools.
 
 ## Runtime Events
 
 The async runtime emits internal events such as `user_message`, `agent_started`,
 `agent_finished`, and `agent_failed`. Use `--trace` to show them in the terminal.
 
-Future proactive push support will attach to the reserved scheduler interface and
-emit non-blocking system notices while the agent is idle.
+## Proactive Notices
+
+Proactive notices are opt-in. In the first implementation they are terminal
+`system_notice` events only; Telegram/MCP ACK delivery is reserved for a later
+phase.
+
+Run one proactive tick and exit:
+
+```powershell
+python -m drift_agent.cli --mode stub --proactive-once
+```
+
+### Drift Background Tasks
+
+When proactive is enabled and no alert/content/context item is visible, Drift can
+use idle time to run one background skill from `drift/skills/*/SKILL.md`.
+
+Drift is enabled by default whenever proactive is enabled. It records successful
+runs in `drift/drift.json`, keeps a shared `drift/drift_note.md`, and creates
+per-skill `state.json` files. Drift can send at most one terminal notice per run
+with `message_push`, and every run must finish with `finish_drift`.
+
+Useful options:
+
+```powershell
+python -m drift_agent.cli --proactive on --drift on
+python -m drift_agent.cli --proactive on --drift off
+python -m drift_agent.cli --proactive on --drift-dir drift --drift-min-interval-hours 1
+python -m drift_agent.cli --proactive on --drift-permission-mode allow
+```
+
+Minimal skill:
+
+```markdown
+---
+name: explore-curiosity
+description: Ask one light question when there is nothing else to push
+---
+
+## Goal
+Ask one small, natural question if the queue has anything useful.
+
+## Workflow
+1. Read `drift/skills/explore-curiosity/queue.md`.
+2. If the queue has a question, call `message_push` once.
+3. Update queue/state files under `drift/`.
+4. Call `finish_drift` with `message_result="sent"` or `"silent"`.
+```
+
+Enable idle proactive notices in async interactive mode:
+
+```powershell
+python -m drift_agent.cli --proactive on --proactive-profile daily
+```
+
+Useful files:
+
+- `PROACTIVE_CONTEXT.md`: user-maintained rules for what is worth pushing
+- `proactive_sources.json`: local static/file proactive sources
+
+Example `proactive_sources.json`:
+
+```json
+{
+  "sources": [
+    {
+      "type": "static",
+      "channel": "alert",
+      "name": "local",
+      "events": [
+        {
+          "event_id": "demo-alert",
+          "title": "Build finished",
+          "content": "The local build finished successfully."
+        }
+      ]
+    }
+  ]
+}
+```

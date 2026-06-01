@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from drift_agent.memory import MemoryManager
 from drift_agent.permissions import PermissionPolicy
 from drift_agent.tools.base import (
     ToolCallResult,
@@ -95,13 +96,17 @@ def create_default_tool_registry(
     permission_policy: PermissionPolicy | None = None,
     enable_web_tools: bool = False,
     enable_mcp_tools: bool = False,
+    memory_manager: MemoryManager | None = None,
 ) -> ToolRegistry:
     from drift_agent.tools.mcp import MCPToolProvider
+    from drift_agent.tools.memory import MemoryToolProvider
     from drift_agent.tools.web import WebToolProvider
     from drift_agent.tools.workspace import WorkspaceToolProvider
 
     registry = ToolRegistry()
     registry.register_provider(WorkspaceToolProvider(workdir, permission_policy))
+    if memory_manager is not None:
+        registry.register_provider(MemoryToolProvider(memory_manager, enabled=True))
     if enable_web_tools:
         registry.register_provider(WebToolProvider(enabled=True))
     if enable_mcp_tools:

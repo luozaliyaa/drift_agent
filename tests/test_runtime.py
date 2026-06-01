@@ -9,6 +9,8 @@ from drift_agent.loop import AgentState, AgentStatus, StepResult
 from drift_agent.runtime import AsyncAgentRuntime
 from drift_agent.runtime.events import RuntimeEvent, RuntimeEventType
 from drift_agent.runtime.renderer import TerminalRenderer
+from drift_agent.runtime.scheduler import IdlePushScheduler
+from drift_agent.proactive.types import ProactiveDecision
 
 
 def test_async_runtime_emits_started_and_finished_events() -> None:
@@ -112,6 +114,97 @@ async def _assert_async_runtime_cancel_current_emits_cancelled_event() -> None:
 
     assert task.cancelled()
     assert any(event.type is RuntimeEventType.AGENT_CANCELLED for event in events)
+
+
+def test_idle_scheduler_emits_system_notice() -> None:
+    asyncio.run(_assert_idle_scheduler_emits_system_notice())
+
+
+async def _assert_idle_scheduler_emits_system_notice() -> None:
+    def succeed(state: AgentState) -> StepResult:
+        return StepResult(
+            action="finish",
+            observation="done",
+            status=AgentStatus.SUCCESS,
+        )
+
+    scheduler = IdlePushScheduler(
+        runtime=None,
+        tick=lambda: ProactiveDecision("reply", message="time to look"),
+        enabled=True,
+        interval_seconds=0.01,
+    )
+    runtime = AsyncAgentRuntime(stepper=succeed, scheduler=scheduler)
+
+    await scheduler.run_once()
+    event = await runtime.events.get()
+
+    assert event.type is RuntimeEventType.SYSTEM_NOTICE
+    assert event.message == "time to look"
+
+
+def test_idle_scheduler_skips_while_runtime_busy() -> None:
+    asyncio.run(_assert_idle_scheduler_skips_while_runtime_busy())
+
+
+async def _assert_idle_scheduler_skips_while_runtime_busy() -> None:
+    calls = 0
+
+    def tick() -> ProactiveDecision:
+        nonlocal calls
+        calls += 1
+        return ProactiveDecision("reply", message="busy notice")
+
+    def succeed(state: AgentState) -> StepResult:
+        return StepResult(
+            action="finish",
+            observation="done",
+            status=AgentStatus.SUCCESS,
+        )
+
+    scheduler = IdlePushScheduler(runtime=None, tick=tick, enabled=True)
+    runtime = AsyncAgentRuntime(stepper=succeed, scheduler=scheduler)
+    scheduler.on_agent_busy()
+
+    await scheduler.run_once()
+
+    assert calls == 0
+    assert runtime.events.empty()
+
+
+def test_async_runtime_notifies_scheduler_of_user_activity() -> None:
+    asyncio.run(_assert_async_runtime_notifies_scheduler_of_user_activity())
+
+
+async def _assert_async_runtime_notifies_scheduler_of_user_activity() -> None:
+    class TrackingScheduler:
+        runtime = None
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def on_user_activity(self) -> None:
+            self.calls.append("user")
+
+        def on_agent_busy(self) -> None:
+            self.calls.append("busy")
+
+        def on_agent_idle(self) -> None:
+            self.calls.append("idle")
+
+    def succeed(state: AgentState) -> StepResult:
+        return StepResult(
+            action="finish",
+            observation="done",
+            status=AgentStatus.SUCCESS,
+        )
+
+    scheduler = TrackingScheduler()
+    runtime = AsyncAgentRuntime(stepper=succeed, scheduler=scheduler)
+
+    await runtime.run_once("hello")
+
+    assert scheduler.calls == ["user", "busy", "idle"]
 
 
 def test_renderer_prints_final_answer(capsys) -> None:

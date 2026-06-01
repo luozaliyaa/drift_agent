@@ -114,6 +114,10 @@ def test_cli_passes_memory_options_to_live_planner(capsys, monkeypatch) -> None:
         def __init__(self, **kwargs):
             assert kwargs["memory_dir"] == "custom-memory"
             assert kwargs["session_id"] == "project-a"
+            assert kwargs["keep_count"] == 4
+            assert kwargs["consolidation_min"] == 2
+            assert kwargs["optimizer_interval_seconds"] == 30
+            assert kwargs["optimize_now"] is True
 
     class FakeDeepSeekPlanner:
         def __init__(self, config, **kwargs):
@@ -143,6 +147,13 @@ def test_cli_passes_memory_options_to_live_planner(capsys, monkeypatch) -> None:
             "--session",
             "project-a",
             "--show-memory",
+            "--memory-keep-count",
+            "4",
+            "--memory-consolidation-min",
+            "2",
+            "--memory-optimizer-interval-seconds",
+            "30",
+            "--memory-optimize-now",
         ]
     )
 
@@ -190,3 +201,147 @@ def test_cli_live_mode_requires_api_key(capsys, monkeypatch) -> None:
     captured = capsys.readouterr()
     assert exit_code == 2
     assert "DEEPSEEK_API_KEY is required" in captured.err
+
+
+def test_cli_proactive_once_emits_terminal_notice(capsys, monkeypatch) -> None:
+    class FakeTick:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_once(self):
+            from drift_agent.proactive.types import ProactiveDecision
+
+            return ProactiveDecision("reply", message="proactive hello")
+
+    monkeypatch.setattr("drift_agent.cli.ProactiveAgentTick", FakeTick)
+
+    exit_code = main(["--mode", "stub", "--proactive-once"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "proactive hello" in captured.out
+
+
+def test_cli_passes_proactive_options_to_scheduler(capsys, monkeypatch) -> None:
+    captured_config = {}
+
+    class FakeTick:
+        def __init__(self, **kwargs):
+            captured_config["config"] = kwargs["config"]
+
+        def run_once(self):
+            from drift_agent.proactive.types import ProactiveDecision
+
+            return ProactiveDecision("skip")
+
+    monkeypatch.setattr("drift_agent.cli.ProactiveAgentTick", FakeTick)
+
+    exit_code = main(
+        [
+            "--mode",
+            "stub",
+            "--proactive-once",
+            "--proactive-profile",
+            "quiet",
+            "--proactive-context",
+            "custom-context.md",
+            "--proactive-sources",
+            "custom-sources.json",
+        ]
+    )
+
+    config = captured_config["config"]
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert config.profile == "quiet"
+    assert str(config.context_path) == "custom-context.md"
+    assert str(config.sources_path) == "custom-sources.json"
+
+
+def test_cli_builds_drift_runner_for_live_proactive_once(capsys, monkeypatch) -> None:
+    captured = {}
+
+    class FakeMemoryManager:
+        def __init__(self, **kwargs):
+            pass
+
+    class FakeDeepSeekPlanner:
+        def __init__(self, config, **kwargs):
+            self.client = object()
+            self.memory_manager = kwargs["memory_manager"]
+
+    class FakeDriftRunner:
+        def __init__(self, **kwargs):
+            captured["drift_config"] = kwargs["config"]
+
+    class FakeTick:
+        def __init__(self, **kwargs):
+            captured["drift_runner"] = kwargs["drift_runner"]
+
+        def run_once(self):
+            from drift_agent.proactive.types import ProactiveDecision
+
+            return ProactiveDecision("skip")
+
+    monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setattr("drift_agent.cli.MemoryManager", FakeMemoryManager)
+    monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setattr("drift_agent.cli.DriftRunner", FakeDriftRunner)
+    monkeypatch.setattr("drift_agent.cli.ProactiveAgentTick", FakeTick)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    exit_code = main(
+        [
+            "--proactive-once",
+            "--drift-dir",
+            "custom-drift",
+            "--drift-min-interval-hours",
+            "2",
+            "--drift-max-steps",
+            "9",
+            "--drift-permission-mode",
+            "allow",
+        ]
+    )
+
+    config = captured["drift_config"]
+    assert exit_code == 0
+    assert captured["drift_runner"] is not None
+    assert str(config.drift_dir) == "custom-drift"
+    assert config.min_interval_hours == 2
+    assert config.max_steps == 9
+    assert config.permission_mode == "allow"
+
+
+def test_cli_drift_off_disables_drift_runner(capsys, monkeypatch) -> None:
+    captured = {}
+
+    class FakeMemoryManager:
+        def __init__(self, **kwargs):
+            pass
+
+    class FakeDeepSeekPlanner:
+        def __init__(self, config, **kwargs):
+            self.client = object()
+            self.memory_manager = kwargs["memory_manager"]
+
+    class FakeTick:
+        def __init__(self, **kwargs):
+            captured["drift_runner"] = kwargs["drift_runner"]
+
+        def run_once(self):
+            from drift_agent.proactive.types import ProactiveDecision
+
+            return ProactiveDecision("skip")
+
+    monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setattr("drift_agent.cli.MemoryManager", FakeMemoryManager)
+    monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setattr("drift_agent.cli.ProactiveAgentTick", FakeTick)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    exit_code = main(["--proactive-once", "--drift", "off"])
+
+    assert exit_code == 0
+    assert captured["drift_runner"] is None

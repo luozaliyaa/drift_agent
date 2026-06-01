@@ -87,3 +87,7 @@ class RuntimeEvent:
             ", ".join(sources),
             payload={"sources": sources},
         )
+
+    @classmethod
+    def system_notice(cls, message: str) -> "RuntimeEvent":
+        return cls(RuntimeEventType.SYSTEM_NOTICE, message)
