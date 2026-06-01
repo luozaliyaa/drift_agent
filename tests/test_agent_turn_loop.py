@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 
 from drift_agent.agent import AgentTurnLoop
+from drift_agent.events import EventBus, TurnCommitted
 from drift_agent.agent.phases import TURN_PHASES
 from drift_agent.loop import AgentStatus, StepResult
 from drift_agent.memory import MemoryContext
@@ -127,6 +128,150 @@ def test_agent_turn_loop_dispatches_tool_and_continues_reasoning() -> None:
     assert result.output == "final answer"
     assert context.tool_records[0]["name"] == "workspace.read_file"
     assert client.requests[1]["messages"][-1]["role"] == "tool"
+
+
+def test_agent_turn_loop_requires_tool_search_for_deferred_tool() -> None:
+    class FakeProvider:
+        namespace = "workspace"
+
+        def list_tools(self):
+            return [
+                ToolSpec(
+                    canonical_id="workspace.write_file",
+                    description="Write a file",
+                    parameters={"type": "object", "properties": {}},
+                    provider="workspace",
+                    always_on=False,
+                )
+            ]
+
+        def call_tool(self, canonical_id, arguments):
+            raise AssertionError("deferred tool should not execute before unlock")
+
+    registry = ToolRegistry()
+    registry.register_provider(FakeProvider())
+    client = FakeClient(
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "workspace__write_file",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"content": "ok"},
+    )
+    loop = AgentTurnLoop(client=client, tools=registry)
+
+    result, context = loop.run_turn("write it")
+
+    assert result.status is AgentStatus.SUCCESS
+    assert context.tool_records[0]["name"] == "workspace.write_file"
+    assert "deferred" in context.tool_records[0]["result"]
+
+
+def test_agent_turn_loop_tool_search_unlocks_deferred_tool() -> None:
+    class FakeProvider:
+        namespace = "workspace"
+
+        def list_tools(self):
+            return [
+                ToolSpec(
+                    canonical_id="workspace.write_file",
+                    description="Write a file",
+                    parameters={"type": "object", "properties": {}},
+                    provider="workspace",
+                    always_on=False,
+                )
+            ]
+
+        def call_tool(self, canonical_id, arguments):
+            return ToolCallResult(canonical_id, "wrote")
+
+    from drift_agent.tools.registry import ToolSearchProvider
+
+    registry = ToolRegistry()
+    registry.register_provider(FakeProvider())
+    registry.register_provider(ToolSearchProvider(registry))
+    client = FakeClient(
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "tool_search",
+                        "arguments": json.dumps({"select": "workspace.write_file"}),
+                    },
+                }
+            ],
+        },
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {
+                        "name": "workspace__write_file",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"content": "done"},
+    )
+    loop = AgentTurnLoop(client=client, tools=registry)
+
+    result, context = loop.run_turn("write it")
+
+    assert result.status is AgentStatus.SUCCESS
+    assert context.tool_records[-1]["result"] == "wrote"
+    second_tool_names = {tool["function"]["name"] for tool in client.requests[1]["tools"]}
+    assert "workspace__write_file" in second_tool_names
+
+
+def test_agent_turn_loop_emits_turn_committed_event() -> None:
+    events = []
+    bus = EventBus()
+    bus.on(TurnCommitted, events.append)
+    loop = AgentTurnLoop(
+        client=FakeClient({"content": "ok"}),
+        tools=ToolRegistry(),
+        event_bus=bus,
+    )
+
+    result, _context = loop.run_turn("hello")
+
+    assert result.status is AgentStatus.SUCCESS
+    assert len(events) == 1
+    assert events[0].user_prompt == "hello"
+    assert events[0].assistant_answer == "ok"
+    assert events[0].status == "success"
+
+
+def test_event_bus_handler_errors_do_not_break_turn() -> None:
+    events = []
+    bus = EventBus()
+    bus.on(TurnCommitted, lambda event: (_ for _ in ()).throw(RuntimeError("boom")))
+    bus.on(TurnCommitted, events.append)
+    loop = AgentTurnLoop(
+        client=FakeClient({"content": "ok"}),
+        tools=ToolRegistry(),
+        event_bus=bus,
+    )
+
+    result, _context = loop.run_turn("hello")
+
+    assert result.status is AgentStatus.SUCCESS
+    assert len(events) == 1
+    assert "boom" in bus.errors[0]
 
 
 def test_agent_turn_loop_streams_model_delta_events() -> None:

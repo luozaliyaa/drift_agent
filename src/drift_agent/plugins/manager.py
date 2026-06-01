@@ -137,6 +137,10 @@ class PluginToolProvider(ToolProvider):
                     parameters=spec.parameters,
                     handler=spec.handler,
                     enabled=spec.enabled,
+                    always_on=False,
+                    risk=spec.risk if spec.risk != "read-only" else "unknown",
+                    search_hint=spec.search_hint,
+                    category=spec.category or "plugin",
                 )
                 self._tool_plugins[normalized.canonical_id] = plugin
                 specs.append(normalized)

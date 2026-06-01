@@ -43,6 +43,9 @@ class MemoryToolProvider(ToolProvider):
                 provider=self.namespace,
                 aliases=("remember",),
                 enabled=self.enabled,
+                risk="memory-write",
+                category="memory",
+                search_hint="Remember a fact, preference, or user request.",
             ),
             ToolSpec(
                 canonical_id="memory.recall",
@@ -69,6 +72,9 @@ class MemoryToolProvider(ToolProvider):
                 provider=self.namespace,
                 aliases=("recall_memory",),
                 enabled=self.enabled,
+                risk="read-only",
+                category="memory",
+                search_hint="Search or recall durable local memory.",
             ),
             ToolSpec(
                 canonical_id="memory.forget",
@@ -86,6 +92,9 @@ class MemoryToolProvider(ToolProvider):
                 provider=self.namespace,
                 aliases=("forget_memory",),
                 enabled=self.enabled,
+                risk="memory-delete",
+                category="memory",
+                search_hint="Forget or delete a stored memory by id.",
             ),
         ]
 

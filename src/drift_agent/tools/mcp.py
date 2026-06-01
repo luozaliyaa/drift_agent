@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from drift_agent.mcp import MCPClientError, MCPServerConfig, SyncMCPClient, load_mcp_config
+from drift_agent.mcp import MCPClientError, MCPServerConfig, MCPServerRegistry, SyncMCPClient, load_mcp_config
 from drift_agent.tools.base import ToolCallResult, ToolProvider, ToolSpec
 
 
@@ -19,11 +19,13 @@ class MCPToolProvider(ToolProvider):
         enabled: bool = False,
         config_path: str | Path = "mcp_servers.json",
         client_factory: Any | None = None,
+        registry: MCPServerRegistry | None = None,
     ) -> None:
         self.server_name = server_name
         self.enabled = enabled
         self.config_path = Path(config_path)
         self.client_factory = client_factory or SyncMCPClient
+        self.registry = registry
         self._server_config: MCPServerConfig | None = None
         self._tool_names: dict[str, str] = {}
 
@@ -33,12 +35,8 @@ class MCPToolProvider(ToolProvider):
     def list_tools(self) -> list[ToolSpec]:
         if not self.enabled:
             return []
-        server = self._load_server_config()
-        if server is None:
-            return []
         try:
-            with self.client_factory(server) as client:
-                tools = client.list_tools()
+            tools = self._list_mcp_tools()
         except (MCPClientError, OSError):
             return []
         specs: list[ToolSpec] = []
@@ -51,8 +49,7 @@ class MCPToolProvider(ToolProvider):
     def call_tool(self, canonical_id: str, arguments: dict[str, Any]) -> ToolCallResult:
         if not self.enabled:
             return ToolCallResult(canonical_id, f"Tool disabled: {canonical_id}", True)
-        server = self._load_server_config()
-        if server is None:
+        if self._load_server_config() is None and self.registry is None:
             return ToolCallResult(
                 canonical_id,
                 f"Tool disabled: MCP server not configured: {self.server_name}",
@@ -63,11 +60,28 @@ class MCPToolProvider(ToolProvider):
             self.server_name,
         )
         try:
-            with self.client_factory(server) as client:
-                result = client.call_tool(tool_name, arguments)
+            result = self._call_mcp_tool(tool_name, arguments)
         except (MCPClientError, OSError) as exc:
             return ToolCallResult(canonical_id, f"Error: {exc}", True)
         return ToolCallResult(canonical_id, json.dumps(result, ensure_ascii=False))
+
+    def _list_mcp_tools(self) -> list[dict[str, Any]]:
+        if self.registry is not None:
+            return self.registry.list_tools(self.server_name)
+        server = self._load_server_config()
+        if server is None:
+            return []
+        with self.client_factory(server) as client:
+            return client.list_tools()
+
+    def _call_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self.registry is not None:
+            return self.registry.call_tool(self.server_name, tool_name, arguments)
+        server = self._load_server_config()
+        if server is None:
+            raise MCPClientError(f"MCP server not configured: {self.server_name}")
+        with self.client_factory(server) as client:
+            return client.call_tool(tool_name, arguments)
 
     def _load_server_config(self) -> MCPServerConfig | None:
         if self._server_config is not None:
@@ -92,6 +106,10 @@ class MCPToolProvider(ToolProvider):
             provider=self.namespace,
             description=str(tool.get("description") or f"MCP tool {name}"),
             parameters=schema,
+            always_on=False,
+            risk="mcp",
+            category="mcp",
+            search_hint=f"Remote MCP tool from server {self.server_name}: {name}",
         )
 
 

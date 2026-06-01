@@ -35,6 +35,9 @@ class WebToolProvider(ToolProvider):
                     "required": ["query"],
                 },
                 enabled=False,
+                risk="network",
+                category="web",
+                search_hint="Search the public web.",
             ),
             ToolSpec(
                 canonical_id="web.fetch",
@@ -60,6 +63,9 @@ class WebToolProvider(ToolProvider):
                     "required": ["url"],
                 },
                 enabled=enabled,
+                risk="network",
+                category="web",
+                search_hint="Fetch public HTTP or HTTPS URL contents.",
             ),
         ]
 

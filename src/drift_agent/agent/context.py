@@ -15,6 +15,7 @@ class TurnContext:
     user_message: str
     messages: list[dict[str, Any]] = field(default_factory=list)
     tool_schemas: list[dict[str, Any]] = field(default_factory=list)
+    visible_tool_names: set[str] | None = None
     memory_context: MemoryContext = field(default_factory=MemoryContext)
     tool_trace: list[str] = field(default_factory=list)
     tool_records: list[dict[str, object]] = field(default_factory=list)

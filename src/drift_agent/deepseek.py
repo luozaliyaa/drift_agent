@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from drift_agent.agent import AgentTurnLoop
 from drift_agent.config import DeepSeekConfig
+from drift_agent.events import EventBus
 from drift_agent.loop import AgentState, AgentStatus, StepResult
 from drift_agent.memory import MemoryLLM, MemoryManager
 from drift_agent.permissions import PermissionPolicy
@@ -94,6 +95,8 @@ class DeepSeekPlanner:
     show_memory: bool = False
     tool_registry: ToolRegistry | None = None
     plugin_manager: PluginManager | None = None
+    event_bus: EventBus | None = None
+    enable_tool_search: bool = True
 
     def __post_init__(self) -> None:
         if not self.config.api_key:
@@ -109,6 +112,7 @@ class DeepSeekPlanner:
             permission_policy=self.permission_policy,
             memory_manager=self.memory_manager,
             plugin_manager=self.plugin_manager,
+            enable_tool_search=self.enable_tool_search,
         )
 
     def __call__(self, state: AgentState) -> StepResult:
@@ -160,6 +164,8 @@ class DeepSeekPlanner:
             stream=stream,
             error_formatter=_format_request_error,
             plugin_manager=self.plugin_manager,
+            event_bus=self.event_bus,
+            enable_tool_search=self.enable_tool_search,
         )
 
 

@@ -11,6 +11,7 @@ from drift_agent.tools import (
     WorkspaceToolProvider,
     create_default_tool_registry,
 )
+from drift_agent.tools.base import ToolCallResult, ToolSpec
 
 
 class FakeMCPClient:
@@ -72,6 +73,47 @@ def test_registry_dispatch_supports_encoded_canonical_and_short_alias(tmp_path) 
     assert registry.dispatch_json("workspace__read_file", {"path": "note.txt"}) == "hello"
     assert registry.dispatch_json("workspace.read_file", {"path": "note.txt"}) == "hello"
     assert registry.dispatch_json("read_file", {"path": "note.txt"}) == "hello"
+
+
+def test_registry_search_finds_deferred_tools(tmp_path) -> None:
+    registry = create_default_tool_registry(
+        tmp_path,
+        permission_policy=PermissionPolicy(tmp_path, mode="allow"),
+    )
+
+    matches = registry.search("delete file")
+
+    assert matches[0]["id"] == "workspace.delete_file"
+    assert matches[0]["always_on"] == "false"
+
+
+def test_registry_openai_tools_can_be_limited_to_visible_set(tmp_path) -> None:
+    registry = create_default_tool_registry(
+        tmp_path,
+        permission_policy=PermissionPolicy(tmp_path, mode="allow"),
+    )
+
+    names = {
+        tool["function"]["name"]
+        for tool in registry.as_openai_tools(registry.always_on_names())
+    }
+
+    assert "tool_search" in names
+    assert "workspace__read_file" in names
+    assert "workspace__write_file" not in names
+
+
+def test_tool_search_returns_exact_selection(tmp_path) -> None:
+    registry = create_default_tool_registry(
+        tmp_path,
+        permission_policy=PermissionPolicy(tmp_path, mode="allow"),
+    )
+
+    result = registry.dispatch_json("tool_search", {"select": "write_file"})
+    payload = json.loads(result)
+
+    assert payload["selected"] == "workspace.write_file"
+    assert payload["tools"][0]["id"] == "workspace.write_file"
 
 
 def test_registry_records_last_canonical_id(tmp_path) -> None:
@@ -165,6 +207,64 @@ def test_mcp_provider_exposes_configured_server_tools(tmp_path, monkeypatch) -> 
     assert "mcp__github__list_notifications" in names
     assert json.loads(result)["tool"] == "list_notifications"
     assert json.loads(result)["arguments"] == {"filter": "participating"}
+
+
+def test_mcp_provider_reuses_persistent_registry(tmp_path) -> None:
+    from drift_agent.mcp import MCPServerRegistry
+
+    starts = []
+
+    class CountingMCPClient(FakeMCPClient):
+        def __enter__(self):
+            starts.append(self.server.name)
+            return self
+
+    config_path = tmp_path / "mcp_servers.json"
+    config_path.write_text(
+        json.dumps({"servers": {"github": {"command": "fake-github-mcp"}}}),
+        encoding="utf-8",
+    )
+    mcp_registry = MCPServerRegistry(config_path, client_factory=CountingMCPClient)
+    registry = create_default_tool_registry(
+        enable_mcp_tools=True,
+        mcp_config_path=config_path,
+        mcp_server="github",
+        mcp_registry=mcp_registry,
+    )
+
+    try:
+        registry.dispatch_json("mcp__github__list_notifications", {})
+        registry.dispatch_json("mcp__github__list_notifications", {"filter": "all"})
+    finally:
+        mcp_registry.close_all()
+
+    assert starts == ["github"]
+
+
+def test_registry_rejects_hidden_deferred_tool_until_unlocked() -> None:
+    class FakeProvider:
+        namespace = "fake"
+
+        def list_tools(self):
+            return [
+                ToolSpec(
+                    canonical_id="fake.write",
+                    description="Write something",
+                    parameters={"type": "object", "properties": {}},
+                    provider=self.namespace,
+                    always_on=False,
+                )
+            ]
+
+        def call_tool(self, canonical_id, arguments):
+            return ToolCallResult(canonical_id, "wrote")
+
+    registry = ToolRegistry()
+    registry.register_provider(FakeProvider())
+    visible = registry.always_on_names()
+
+    assert registry.as_openai_tools(visible) == []
+    assert registry.search("write")[0]["id"] == "fake.write"
 
 
 def test_disabled_stub_providers_return_recoverable_errors() -> None:

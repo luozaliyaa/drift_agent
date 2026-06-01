@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from drift_agent.agent.context import TurnContext
 from drift_agent.agent.hooks import NoopPhaseHook, PhaseHook
 from drift_agent.agent.phases import TurnPhase
+from drift_agent.events import EventBus, TurnCommitted
 from drift_agent.loop import AgentStatus, StepResult
 from drift_agent.memory import MemoryContext, MemoryManager
 from drift_agent.plugins import PluginManager, ToolHookContext
@@ -45,6 +46,8 @@ class AgentTurnLoop:
         hooks: list[PhaseHook] | None = None,
         error_formatter: Callable[[Exception], str] | None = None,
         plugin_manager: PluginManager | None = None,
+        event_bus: EventBus | None = None,
+        enable_tool_search: bool = True,
     ) -> None:
         self.client = client
         self.tools = tools
@@ -55,6 +58,8 @@ class AgentTurnLoop:
         self.hooks = hooks or [NoopPhaseHook()]
         self.error_formatter = error_formatter or (lambda exc: str(exc))
         self.plugin_manager = plugin_manager or PluginManager()
+        self.event_bus = event_bus or EventBus()
+        self.enable_tool_search = enable_tool_search
         self.last_context: TurnContext | None = None
 
     def run_turn(self, user_message: str) -> tuple[StepResult, TurnContext]:
@@ -146,7 +151,12 @@ class AgentTurnLoop:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": context.user_message},
         ]
-        context.tool_schemas = self.tools.as_openai_tools()
+        if self.enable_tool_search:
+            context.visible_tool_names = self.tools.always_on_names()
+            context.tool_schemas = self.tools.as_openai_tools(context.visible_tool_names)
+        else:
+            context.visible_tool_names = None
+            context.tool_schemas = self.tools.as_openai_tools()
         yield from self._finish_phase(phase, context)
 
     def _run_reasoner(self, context: TurnContext) -> Iterator[RuntimeEvent]:
@@ -229,6 +239,9 @@ class AgentTurnLoop:
         arguments = function.get("arguments")
         yield context.add_event(RuntimeEvent.tool_started(tool_name, arguments or ""))
         result = self._dispatch_tool_with_plugins(context, tool_name, arguments)
+        self._update_visible_tools_after_tool_search(context, result, arguments)
+        if self.enable_tool_search:
+            context.tool_schemas = self.tools.as_openai_tools(context.visible_tool_names)
         output = result.output
         context.tool_trace.append(f"- {result.canonical_id}: {output[:200]}")
         context.tool_records.append(
@@ -257,6 +270,18 @@ class AgentTurnLoop:
         raw_arguments: str | dict[str, Any] | None,
     ) -> ToolCallResult:
         canonical_id = self.tools.resolve_name(tool_name)
+        if self.enable_tool_search and not self.tools.is_visible(
+            canonical_id,
+            context.visible_tool_names,
+        ):
+            return ToolCallResult(
+                canonical_id,
+                (
+                    f"Error: Tool {canonical_id} is deferred. "
+                    f"Call tool_search with select='{canonical_id}' before using it."
+                ),
+                True,
+            )
         try:
             arguments = parse_arguments(raw_arguments)
         except ValueError as exc:
@@ -292,6 +317,7 @@ class AgentTurnLoop:
         phase = TurnPhase.AFTER_TURN
         yield from self._start_phase(phase, context)
         context.memory_writes = self._record_memory(context)
+        self._emit_turn_committed(context)
         self.plugin_manager.after_turn(context)
         yield from self._finish_phase(phase, context)
 
@@ -299,8 +325,40 @@ class AgentTurnLoop:
         phase = TurnPhase.AFTER_TURN
         yield from self._start_phase(phase, context)
         context.memory_writes = self._record_memory(context)
+        self._emit_turn_committed(context)
         self.plugin_manager.after_turn(context)
         yield from self._finish_phase(phase, context)
+
+    def _update_visible_tools_after_tool_search(
+        self,
+        context: TurnContext,
+        result: ToolCallResult,
+        raw_arguments: str | dict[str, Any] | None,
+    ) -> None:
+        if result.canonical_id != "tool_search" or context.visible_tool_names is None:
+            return
+        try:
+            arguments = parse_arguments(raw_arguments)
+        except ValueError:
+            return
+        selected = str(arguments.get("select") or arguments.get("tool") or "").strip()
+        query = selected or str(arguments.get("query") or "").strip()
+        exact = self.tools.exact_tool_match(selected or query)
+        if exact:
+            context.visible_tool_names.add(exact)
+
+    def _emit_turn_committed(self, context: TurnContext) -> None:
+        session_id = getattr(self.memory_manager, "session_id", "default")
+        self.event_bus.emit(
+            TurnCommitted(
+                session_id=str(session_id),
+                user_prompt=context.user_message,
+                assistant_answer=context.final_answer,
+                status=context.status.value,
+                tool_calls=list(context.tool_records),
+                memory_writes=list(context.memory_writes),
+            )
+        )
 
     def _record_memory(self, context: TurnContext) -> list[str]:
         if self.memory_manager is None:

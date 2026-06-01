@@ -20,6 +20,10 @@ class ToolSpec:
     provider: str = ""
     aliases: tuple[str, ...] = ()
     enabled: bool = True
+    always_on: bool = True
+    risk: str = "read-only"
+    search_hint: str = ""
+    category: str = ""
 
     @property
     def encoded_name(self) -> str:

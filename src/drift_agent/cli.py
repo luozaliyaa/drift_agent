@@ -11,8 +11,10 @@ from collections.abc import Sequence
 from drift_agent.config import load_deepseek_config, load_dotenv
 from drift_agent.deepseek import DeepSeekPlanner
 from drift_agent.drift import DriftConfig, DriftRunner
+from drift_agent.events import EventBus
 from drift_agent.loop import AgentLoop, StubPlanner
 from drift_agent.memory import MemoryManager
+from drift_agent.mcp import MCPServerRegistry
 from drift_agent.permissions import PermissionPolicy, prompt_approver
 from drift_agent.plugins import PluginManager
 from drift_agent.proactive import ProactiveAgentTick, ProactiveConfig, ProactiveSourceLoader
@@ -141,6 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="List active model-callable tools and exit.",
     )
     parser.add_argument(
+        "--tool-search",
+        choices=["on", "off"],
+        default="on",
+        help="Expose only always-on tools first and let the model unlock deferred tools.",
+    )
+    parser.add_argument(
         "--plugins",
         choices=["on", "off"],
         default="on",
@@ -216,55 +224,63 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     plugin_manager = build_plugin_manager(args)
+    event_bus = EventBus()
+    mcp_registry = MCPServerRegistry(args.mcp_config)
 
-    if args.list_tools:
-        permission_policy = PermissionPolicy(
-            mode=args.permission_mode,
-            approver=prompt_approver,
-            allow_delete_without_ask_dirs=args.allow_delete_without_ask_dir,
-        )
-        memory_manager = None
-        if args.memory == "on":
-            memory_manager = MemoryManager(
-                memory_dir=args.memory_dir,
-                session_id=args.session,
-                keep_count=args.memory_keep_count,
-                consolidation_min=args.memory_consolidation_min,
-                optimizer_interval_seconds=args.memory_optimizer_interval_seconds,
-                optimize_now=args.memory_optimize_now,
+    try:
+        if args.list_tools:
+            permission_policy = PermissionPolicy(
+                mode=args.permission_mode,
+                approver=prompt_approver,
+                allow_delete_without_ask_dirs=args.allow_delete_without_ask_dir,
             )
-        registry = create_default_tool_registry(
-            permission_policy=permission_policy,
-            enable_web_tools=args.enable_web_tools,
-            enable_mcp_tools=args.enable_mcp_tools,
-            mcp_config_path=args.mcp_config,
-            mcp_server=args.mcp_server,
-            memory_manager=memory_manager,
-            plugin_manager=plugin_manager,
-        )
-        for info in registry.list_tool_info():
-            print(
-                f"{info['id']}\t{info['encoded_name']}\t"
-                f"{info['provider']}\t{info['description']}"
+            memory_manager = None
+            if args.memory == "on":
+                memory_manager = MemoryManager(
+                    memory_dir=args.memory_dir,
+                    session_id=args.session,
+                    keep_count=args.memory_keep_count,
+                    consolidation_min=args.memory_consolidation_min,
+                    optimizer_interval_seconds=args.memory_optimizer_interval_seconds,
+                    optimize_now=args.memory_optimize_now,
+                )
+            registry = create_default_tool_registry(
+                permission_policy=permission_policy,
+                enable_web_tools=args.enable_web_tools,
+                enable_mcp_tools=args.enable_mcp_tools,
+                mcp_config_path=args.mcp_config,
+                mcp_server=args.mcp_server,
+                memory_manager=memory_manager,
+                plugin_manager=plugin_manager,
+                enable_tool_search=args.tool_search == "on",
+                mcp_registry=mcp_registry,
             )
-        return 0
+            for info in registry.list_tool_info():
+                print(
+                    f"{info['id']}\t{info['encoded_name']}\t"
+                    f"{info['provider']}\t{info['description']}"
+                )
+            return 0
 
-    stepper = build_stepper(args, parser, plugin_manager)
-    if args.runtime == "sync":
-        if not args.task:
-            return run_repl(args, stepper)
-        return run_task(args.task, args, stepper)
+        stepper = build_stepper(args, parser, plugin_manager, event_bus, mcp_registry)
+        if args.runtime == "sync":
+            if not args.task:
+                return run_repl(args, stepper)
+            return run_task(args.task, args, stepper)
 
-    return asyncio.run(run_async_cli(args, stepper, plugin_manager))
+        return asyncio.run(run_async_cli(args, stepper, plugin_manager, mcp_registry))
+    finally:
+        mcp_registry.close_all()
 
 
 async def run_async_cli(
     args: argparse.Namespace,
     stepper,
     plugin_manager: PluginManager | None = None,
+    mcp_registry: MCPServerRegistry | None = None,
 ) -> int:
     renderer = TerminalRenderer(trace=args.trace)
-    scheduler = build_proactive_scheduler(args, stepper, plugin_manager)
+    scheduler = build_proactive_scheduler(args, stepper, plugin_manager, mcp_registry)
     runtime = AsyncAgentRuntime(
         stepper=stepper,
         max_steps=args.max_steps,
@@ -359,6 +375,8 @@ def build_stepper(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
     plugin_manager: PluginManager | None = None,
+    event_bus: EventBus | None = None,
+    mcp_registry: MCPServerRegistry | None = None,
 ):
     if args.mode == "live":
         config = load_deepseek_config()
@@ -386,6 +404,8 @@ def build_stepper(
                 mcp_server=args.mcp_server,
                 memory_manager=memory_manager,
                 plugin_manager=plugin_manager,
+                enable_tool_search=args.tool_search == "on",
+                mcp_registry=mcp_registry,
             )
             return DeepSeekPlanner(
                 config,
@@ -395,6 +415,8 @@ def build_stepper(
                 show_memory=args.show_memory,
                 tool_registry=tool_registry,
                 plugin_manager=plugin_manager,
+                event_bus=event_bus,
+                enable_tool_search=args.tool_search == "on",
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -405,6 +427,7 @@ def build_proactive_scheduler(
     args: argparse.Namespace,
     stepper,
     plugin_manager: PluginManager | None = None,
+    mcp_registry: MCPServerRegistry | None = None,
 ) -> IdlePushScheduler | None:
     if args.proactive != "on" and not args.proactive_once:
         return None
@@ -421,6 +444,7 @@ def build_proactive_scheduler(
         source_loader=ProactiveSourceLoader(
             args.proactive_sources,
             mcp_config_path=args.mcp_config,
+            mcp_registry=mcp_registry,
             plugin_manager=plugin_manager,
         ),
         drift_runner=build_drift_runner(args, stepper),

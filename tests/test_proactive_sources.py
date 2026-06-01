@@ -137,3 +137,53 @@ def test_github_mcp_source_loads_notifications(tmp_path) -> None:
     assert events[0].kind == "alert"
     assert events[0].title == "Review API change"
     assert "owner/repo" in events[0].content
+
+
+def test_github_mcp_source_can_use_persistent_registry(tmp_path) -> None:
+    from drift_agent.mcp import MCPServerRegistry
+
+    starts = []
+
+    class CountingMCPClient(FakeMCPClient):
+        def __enter__(self):
+            starts.append(self.server.name)
+            return self
+
+    mcp_config = tmp_path / "mcp_servers.json"
+    mcp_config.write_text(
+        json.dumps({"servers": {"github": {"command": "fake-github-mcp"}}}),
+        encoding="utf-8",
+    )
+    sources_path = tmp_path / "sources.json"
+    sources_path.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "type": "github_mcp",
+                        "channel": "content",
+                        "server": "github",
+                        "tool": "list_notifications",
+                        "arguments": {"filter": "participating"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = MCPServerRegistry(mcp_config, client_factory=CountingMCPClient)
+
+    try:
+        loader = ProactiveSourceLoader(
+            sources_path,
+            mcp_config_path=mcp_config,
+            mcp_registry=registry,
+        )
+        first = loader.load_events()
+        second = loader.load_events()
+    finally:
+        registry.close_all()
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert starts == ["github"]

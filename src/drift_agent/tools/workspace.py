@@ -35,6 +35,10 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["command"],
                 },
                 handler=self.run_bash,
+                always_on=False,
+                risk="shell",
+                category="workspace",
+                search_hint="Run commands, tests, build commands, PowerShell, shell, terminal.",
             ),
             "workspace.read_file": ToolSpec(
                 canonical_id="workspace.read_file",
@@ -50,6 +54,9 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["path"],
                 },
                 handler=self.run_read_file,
+                risk="read-only",
+                category="workspace",
+                search_hint="Open or inspect a text file.",
             ),
             "workspace.write_file": ToolSpec(
                 canonical_id="workspace.write_file",
@@ -65,6 +72,10 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["path", "content"],
                 },
                 handler=self.run_write_file,
+                always_on=False,
+                risk="write",
+                category="workspace",
+                search_hint="Create or overwrite a file.",
             ),
             "workspace.make_dir": ToolSpec(
                 canonical_id="workspace.make_dir",
@@ -77,6 +88,10 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["path"],
                 },
                 handler=self.run_make_dir,
+                always_on=False,
+                risk="write",
+                category="workspace",
+                search_hint="Create a directory or folder.",
             ),
             "workspace.edit_file": ToolSpec(
                 canonical_id="workspace.edit_file",
@@ -93,6 +108,10 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["path", "old_text", "new_text"],
                 },
                 handler=self.run_edit_file,
+                always_on=False,
+                risk="write",
+                category="workspace",
+                search_hint="Edit a file by replacing exact text.",
             ),
             "workspace.move_file": ToolSpec(
                 canonical_id="workspace.move_file",
@@ -108,6 +127,10 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["source", "destination"],
                 },
                 handler=self.run_move_file,
+                always_on=False,
+                risk="write",
+                category="workspace",
+                search_hint="Move or rename a file or directory.",
             ),
             "workspace.delete_file": ToolSpec(
                 canonical_id="workspace.delete_file",
@@ -120,6 +143,10 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["path"],
                 },
                 handler=self.run_delete_file,
+                always_on=False,
+                risk="delete",
+                category="workspace",
+                search_hint="Delete or remove a local file.",
             ),
             "workspace.glob": ToolSpec(
                 canonical_id="workspace.glob",
@@ -132,6 +159,9 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["pattern"],
                 },
                 handler=self.run_glob,
+                risk="read-only",
+                category="workspace",
+                search_hint="Find files by glob pattern.",
             ),
             "workspace.list_dir": ToolSpec(
                 canonical_id="workspace.list_dir",
@@ -146,6 +176,9 @@ class WorkspaceToolProvider(ToolProvider):
                     },
                 },
                 handler=self.run_list_dir,
+                risk="read-only",
+                category="workspace",
+                search_hint="List directory contents.",
             ),
             "workspace.file_info": ToolSpec(
                 canonical_id="workspace.file_info",
@@ -158,6 +191,9 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["path"],
                 },
                 handler=self.run_file_info,
+                risk="read-only",
+                category="workspace",
+                search_hint="Inspect file metadata, size, modified time.",
             ),
             "workspace.search_text": ToolSpec(
                 canonical_id="workspace.search_text",
@@ -174,6 +210,9 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["query"],
                 },
                 handler=self.run_search_text,
+                risk="read-only",
+                category="workspace",
+                search_hint="Search text or grep through workspace files.",
             ),
         }
 

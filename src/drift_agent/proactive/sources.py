@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from drift_agent.mcp import MCPClientError, MCPServerConfig, SyncMCPClient, load_mcp_config
+from drift_agent.mcp import MCPClientError, MCPServerConfig, MCPServerRegistry, SyncMCPClient, load_mcp_config
 from drift_agent.proactive.types import ProactiveEvent, ProactiveSource
 
 if TYPE_CHECKING:
@@ -20,11 +20,13 @@ class ProactiveSourceLoader:
         *,
         mcp_config_path: str | Path = "mcp_servers.json",
         mcp_client_factory: Any | None = None,
+        mcp_registry: MCPServerRegistry | None = None,
         plugin_manager: "PluginManager | None" = None,
     ) -> None:
         self.sources_path = Path(sources_path)
         self.mcp_config_path = Path(mcp_config_path)
         self.mcp_client_factory = mcp_client_factory or SyncMCPClient
+        self.mcp_registry = mcp_registry
         self.plugin_manager = plugin_manager
 
     def load_sources(self) -> list[ProactiveSource]:
@@ -70,8 +72,11 @@ class ProactiveSourceLoader:
             return []
         tool = source.tool or "list_notifications"
         try:
-            with self.mcp_client_factory(server) as client:
-                result = client.call_tool(tool, source.arguments)
+            if self.mcp_registry is not None:
+                result = self.mcp_registry.call_tool(source.server or "github", tool, source.arguments)
+            else:
+                with self.mcp_client_factory(server) as client:
+                    result = client.call_tool(tool, source.arguments)
         except (MCPClientError, OSError, ValueError):
             return []
         payloads = extract_mcp_payloads(result)
@@ -81,6 +86,8 @@ class ProactiveSourceLoader:
         return events
 
     def _load_mcp_server(self, server_name: str) -> MCPServerConfig | None:
+        if self.mcp_registry is not None:
+            return self.mcp_registry.get_config(server_name)
         return load_mcp_config(self.mcp_config_path).get(server_name)
 
 
