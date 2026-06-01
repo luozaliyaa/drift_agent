@@ -30,12 +30,30 @@ class ToolRegistry:
 
     def register_provider(self, provider: ToolProvider) -> None:
         self._providers[provider.namespace] = provider
+        self._register_provider_specs(provider)
+        self._rebuild_aliases()
+
+    def refresh_provider(self, namespace: str) -> None:
+        provider = self._providers.get(namespace)
+        if provider is None:
+            return
+        for canonical_id, spec in list(self._specs.items()):
+            if spec.provider == namespace:
+                del self._specs[canonical_id]
+        self._register_provider_specs(provider)
+        self._rebuild_aliases()
+
+    def _register_provider_specs(self, provider: ToolProvider) -> None:
         for spec in provider.list_tools():
             if not spec.enabled:
                 continue
             if spec.canonical_id in self._specs:
                 raise ValueError(f"Duplicate tool id: {spec.canonical_id}")
             self._specs[spec.canonical_id] = spec
+
+    def _rebuild_aliases(self) -> None:
+        self._aliases = {}
+        for spec in self._specs.values():
             self._aliases[spec.encoded_name] = spec.canonical_id
             self._aliases[spec.canonical_id] = spec.canonical_id
             for alias in spec.aliases:
@@ -241,7 +259,7 @@ def create_default_tool_registry(
     enable_tool_search: bool = True,
     mcp_registry: Any | None = None,
 ) -> ToolRegistry:
-    from drift_agent.tools.mcp import MCPToolProvider
+    from drift_agent.tools.mcp import MCPManagementProvider, MCPToolProvider, SyncMCPClient
     from drift_agent.tools.memory import MemoryToolProvider
     from drift_agent.tools.web import WebToolProvider
     from drift_agent.tools.workspace import WorkspaceToolProvider
@@ -254,12 +272,25 @@ def create_default_tool_registry(
     if enable_web_tools:
         registry.register_provider(WebToolProvider(enabled=True))
     if enable_mcp_tools:
+        if mcp_registry is None:
+            from drift_agent.mcp import MCPServerRegistry
+
+            mcp_registry = MCPServerRegistry(mcp_config_path, client_factory=SyncMCPClient)
+        mcp_provider = MCPToolProvider(
+            server_name=mcp_server,
+            enabled=True,
+            config_path=mcp_config_path,
+            registry=mcp_registry,
+            include_all_servers=True,
+        )
         registry.register_provider(
-            MCPToolProvider(
-                server_name=mcp_server,
-                enabled=True,
-                config_path=mcp_config_path,
-                registry=mcp_registry,
+            mcp_provider
+        )
+        registry.register_provider(
+            MCPManagementProvider(
+                mcp_registry,
+                tool_registry=registry,
+                mcp_provider_namespace=mcp_provider.namespace,
             )
         )
     if plugin_manager is not None and plugin_manager.enabled:

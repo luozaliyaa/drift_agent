@@ -241,6 +241,138 @@ def test_mcp_provider_reuses_persistent_registry(tmp_path) -> None:
     assert starts == ["github"]
 
 
+def test_mcp_admin_add_refreshes_tools_and_persists_config(tmp_path) -> None:
+    from drift_agent.mcp import MCPServerRegistry
+
+    class EchoMCPClient(FakeMCPClient):
+        def list_tools(self):
+            return [
+                {
+                    "name": f"{self.server.name}_echo",
+                    "description": f"Echo from {self.server.name}",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ]
+
+    config_path = tmp_path / "mcp_servers.json"
+    registry_pool = MCPServerRegistry(config_path, client_factory=EchoMCPClient)
+    registry = create_default_tool_registry(
+        enable_mcp_tools=True,
+        mcp_config_path=config_path,
+        mcp_registry=registry_pool,
+    )
+
+    try:
+        initial_names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
+        add_result = json.loads(
+            registry.dispatch_json(
+                "mcp_add",
+                {
+                    "name": "github",
+                    "command": "fake-github-mcp",
+                    "args": ["--stdio"],
+                    "env": {"GITHUB_TOKEN": "secret"},
+                },
+            )
+        )
+        names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
+        mcp_list = json.loads(registry.dispatch_json("mcp_list", {}))
+    finally:
+        registry_pool.close_all()
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "mcp__github__github_echo" not in initial_names
+    assert add_result["added"] == "github"
+    assert add_result["env_keys"] == ["GITHUB_TOKEN"]
+    assert "mcp__github__github_echo" in names
+    assert saved["servers"]["github"]["command"] == "fake-github-mcp"
+    assert saved["servers"]["github"]["args"] == ["--stdio"]
+    assert saved["servers"]["github"]["env"]["GITHUB_TOKEN"] == "secret"
+    assert mcp_list[0]["env_keys"] == ["GITHUB_TOKEN"]
+    assert "secret" not in json.dumps(mcp_list)
+
+
+def test_mcp_admin_remove_closes_server_and_refreshes_tools(tmp_path) -> None:
+    from drift_agent.mcp import MCPServerRegistry
+
+    closed = []
+
+    class ClosingMCPClient(FakeMCPClient):
+        def list_tools(self):
+            return [
+                {
+                    "name": "list_notifications",
+                    "description": "List notifications",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ]
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            closed.append(self.server.name)
+
+    config_path = tmp_path / "mcp_servers.json"
+    config_path.write_text(
+        json.dumps({"servers": {"github": {"command": "fake-github-mcp"}}}),
+        encoding="utf-8",
+    )
+    registry_pool = MCPServerRegistry(config_path, client_factory=ClosingMCPClient)
+    registry = create_default_tool_registry(
+        enable_mcp_tools=True,
+        mcp_config_path=config_path,
+        mcp_registry=registry_pool,
+    )
+
+    try:
+        assert "mcp__github__list_notifications" in {
+            tool["function"]["name"] for tool in registry.as_openai_tools()
+        }
+        result = json.loads(registry.dispatch_json("mcp_remove", {"name": "github"}))
+        names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
+    finally:
+        registry_pool.close_all()
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert result["removed"] is True
+    assert "github" in closed
+    assert "mcp__github__list_notifications" not in names
+    assert saved["servers"] == {}
+
+
+def test_mcp_admin_reload_refreshes_tools_from_disk(tmp_path) -> None:
+    from drift_agent.mcp import MCPServerRegistry
+
+    class EchoMCPClient(FakeMCPClient):
+        def list_tools(self):
+            return [
+                {
+                    "name": f"{self.server.name}_tool",
+                    "description": "Server tool",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ]
+
+    config_path = tmp_path / "mcp_servers.json"
+    config_path.write_text(json.dumps({"servers": {}}), encoding="utf-8")
+    registry_pool = MCPServerRegistry(config_path, client_factory=EchoMCPClient)
+    registry = create_default_tool_registry(
+        enable_mcp_tools=True,
+        mcp_config_path=config_path,
+        mcp_registry=registry_pool,
+    )
+    config_path.write_text(
+        json.dumps({"servers": {"linear": {"command": "fake-linear-mcp"}}}),
+        encoding="utf-8",
+    )
+
+    try:
+        registry.dispatch_json("mcp_reload", {})
+        names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
+    finally:
+        registry_pool.close_all()
+
+    assert "mcp__linear__linear_tool" in names
+
+
 def test_registry_rejects_hidden_deferred_tool_until_unlocked() -> None:
     class FakeProvider:
         namespace = "fake"
