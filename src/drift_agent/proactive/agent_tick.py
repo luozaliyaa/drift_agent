@@ -54,6 +54,7 @@ class ProactiveAgentTick:
             ],
             [],
         )
+        return parse_decision(str(message.get("content") or ""))
 
     def _run_drift(self) -> ProactiveDecision | None:
         if self.drift_runner is None:
@@ -73,7 +74,6 @@ class ProactiveAgentTick:
             decision="skip",
             reason=str(getattr(result, "reason", "drift silent")),
         )
-        return parse_decision(str(message.get("content") or ""))
 
     def build_prompt(self, events: list[ProactiveEvent]) -> str:
         proactive_context = read_proactive_context(self.config.context_path)
