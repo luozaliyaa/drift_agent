@@ -55,6 +55,12 @@ Live mode exposes these workspace tools to the model:
 - `workspace.write_file`: write text to a workspace file
 - `workspace.edit_file`: replace exact text once
 - `workspace.glob`: find files by glob pattern
+- `workspace.list_dir`: list directory entries
+- `workspace.file_info`: inspect file metadata
+- `workspace.search_text`: search text in workspace files
+- `workspace.make_dir`: create a workspace directory
+- `workspace.move_file`: move or rename a workspace file
+- `workspace.delete_file`: delete a workspace file
 
 Model-facing function names are encoded with double underscores, for example
 `workspace.read_file` is exposed as `workspace__read_file`.
@@ -66,8 +72,31 @@ python -m drift_agent.cli --list-tools
 ```
 
 The tool system is backed by a registry package under `src/drift_agent/tools/`.
-Workspace tools are active by default. Web and MCP providers are reserved for
-future expansion and are not exposed unless implemented.
+Workspace tools are active by default. Web tools are opt-in. MCP tools are
+available when a server is configured.
+
+Example `mcp_servers.json` for GitHub:
+
+```json
+{
+  "servers": {
+    "github": {
+      "command": "github-mcp-server",
+      "args": ["stdio"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_your_token"
+      }
+    }
+  }
+}
+```
+
+Expose GitHub MCP tools to the model:
+
+```powershell
+python -m drift_agent.cli --list-tools --enable-mcp-tools --mcp-server github --mcp-config mcp_servers.json
+python -m drift_agent.cli "Check my GitHub notifications" --enable-mcp-tools --mcp-server github
+```
 
 Example:
 
@@ -77,8 +106,10 @@ python -m drift_agent.cli "Read README.md and summarize this project" --trace
 
 ## Permissions
 
-The live agent asks before running approval-required tools such as `write_file`,
-`edit_file`, or potentially destructive shell commands.
+The live agent asks before running local file deletion operations. Normal reads,
+web/API calls, output redirects, writes, edits, directory creation, and moves do
+not prompt by default. Hard-denied shell commands such as `sudo shutdown now`
+are still blocked.
 
 ```powershell
 python -m drift_agent.cli "Create notes/plan.txt with a short plan"
@@ -90,11 +121,20 @@ For trusted experiments, bypass prompts:
 python -m drift_agent.cli "Create notes/plan.txt with a short plan" --permission-mode allow
 ```
 
-To deny every approval-required operation:
+To deny every approval-required deletion:
 
 ```powershell
-python -m drift_agent.cli "Try to edit README.md" --permission-mode deny
+python -m drift_agent.cli "Delete notes/old.txt" --permission-mode deny
 ```
+
+To allow deletion under a specific workspace directory without prompting:
+
+```powershell
+python -m drift_agent.cli --allow-delete-without-ask-dir .pytest-tmp
+```
+
+The flag is repeatable. Only paths under the configured directories are allowed
+without confirmation; other local deletion commands still prompt in `ask` mode.
 
 ## Memory
 
@@ -211,3 +251,26 @@ Example `proactive_sources.json`:
   ]
 }
 ```
+
+GitHub MCP proactive source:
+
+```json
+{
+  "sources": [
+    {
+      "type": "github_mcp",
+      "channel": "content",
+      "name": "github",
+      "server": "github",
+      "tool": "list_notifications",
+      "arguments": {
+        "filter": "participating"
+      }
+    }
+  ]
+}
+```
+
+GitHub MCP results are normalized into alert/content/context events. Mentions,
+review requests, assignments, and failed checks are promoted to `alert`; other
+items use the configured source channel.

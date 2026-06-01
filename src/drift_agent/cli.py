@@ -14,7 +14,7 @@ from drift_agent.drift import DriftConfig, DriftRunner
 from drift_agent.loop import AgentLoop, StubPlanner
 from drift_agent.memory import MemoryManager
 from drift_agent.permissions import PermissionPolicy, prompt_approver
-from drift_agent.proactive import ProactiveAgentTick, ProactiveConfig
+from drift_agent.proactive import ProactiveAgentTick, ProactiveConfig, ProactiveSourceLoader
 from drift_agent.runtime import AsyncAgentRuntime
 from drift_agent.runtime.input import AsyncInputReader
 from drift_agent.runtime.renderer import TerminalRenderer
@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["ask", "allow", "deny"],
         default="ask",
         help="How to handle approval-required tool calls.",
+    )
+    parser.add_argument(
+        "--allow-delete-without-ask-dir",
+        action="append",
+        default=[],
+        help="Allow local file deletion under this workspace directory without prompting. Repeatable.",
     )
     parser.add_argument(
         "--memory",
@@ -116,7 +122,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-mcp-tools",
         action="store_true",
-        help="Reserve MCP tool provider hooks. Real MCP tools are not implemented yet.",
+        help="Expose tools from a configured MCP server.",
+    )
+    parser.add_argument(
+        "--mcp-config",
+        default="mcp_servers.json",
+        help="Path to MCP server configuration JSON.",
+    )
+    parser.add_argument(
+        "--mcp-server",
+        default="github",
+        help="MCP server name to expose when MCP tools are enabled.",
     )
     parser.add_argument(
         "--list-tools",
@@ -192,6 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         permission_policy = PermissionPolicy(
             mode=args.permission_mode,
             approver=prompt_approver,
+            allow_delete_without_ask_dirs=args.allow_delete_without_ask_dir,
         )
         memory_manager = None
         if args.memory == "on":
@@ -207,6 +224,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             permission_policy=permission_policy,
             enable_web_tools=args.enable_web_tools,
             enable_mcp_tools=args.enable_mcp_tools,
+            mcp_config_path=args.mcp_config,
+            mcp_server=args.mcp_server,
             memory_manager=memory_manager,
         )
         for info in registry.list_tool_info():
@@ -325,6 +344,7 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
             permission_policy = PermissionPolicy(
                 mode=args.permission_mode,
                 approver=prompt_approver,
+                allow_delete_without_ask_dirs=args.allow_delete_without_ask_dir,
             )
             memory_manager = None
             if args.memory == "on":
@@ -340,6 +360,8 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
                 permission_policy=permission_policy,
                 enable_web_tools=args.enable_web_tools,
                 enable_mcp_tools=args.enable_mcp_tools,
+                mcp_config_path=args.mcp_config,
+                mcp_server=args.mcp_server,
                 memory_manager=memory_manager,
             )
             return DeepSeekPlanner(
@@ -371,6 +393,10 @@ def build_proactive_scheduler(
         config=config,
         client=getattr(stepper, "client", None),
         memory_manager=getattr(stepper, "memory_manager", None),
+        source_loader=ProactiveSourceLoader(
+            args.proactive_sources,
+            mcp_config_path=args.mcp_config,
+        ),
         drift_runner=build_drift_runner(args, stepper),
     )
     return IdlePushScheduler(

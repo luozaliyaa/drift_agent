@@ -25,7 +25,7 @@ def test_permission_policy_hard_denies_dangerous_bash(tmp_path) -> None:
     assert "sudo" in decision.reason
 
 
-def test_workspace_tools_ask_mode_approves_write(tmp_path) -> None:
+def test_workspace_tools_ask_mode_allows_write_without_prompt(tmp_path) -> None:
     approvals = []
 
     def approve(tool_name, arguments, reason):
@@ -42,23 +42,22 @@ def test_workspace_tools_ask_mode_approves_write(tmp_path) -> None:
 
     assert output == "Wrote 5 bytes to notes.txt"
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello"
-    assert approvals[0][0] == "write_file"
+    assert approvals == []
 
 
-def test_workspace_tools_ask_mode_denies_write(tmp_path) -> None:
+def test_workspace_tools_ask_mode_denies_delete(tmp_path) -> None:
+    note = tmp_path / "notes.txt"
+    note.write_text("hello", encoding="utf-8")
     policy = PermissionPolicy(tmp_path, mode="ask", approver=lambda *args: False)
     tools = WorkspaceTools(tmp_path, permission_policy=policy)
 
-    output = tools.dispatch_json(
-        "write_file",
-        {"path": "notes.txt", "content": "hello"},
-    )
+    output = tools.dispatch_json("delete_file", {"path": "notes.txt"})
 
     assert output.startswith("Permission denied:")
-    assert not (tmp_path / "notes.txt").exists()
+    assert note.exists()
 
 
-def test_workspace_tools_deny_mode_denies_edit(tmp_path) -> None:
+def test_workspace_tools_deny_mode_allows_edit(tmp_path) -> None:
     note = tmp_path / "notes.txt"
     note.write_text("hello", encoding="utf-8")
     policy = PermissionPolicy(tmp_path, mode="deny")
@@ -69,8 +68,8 @@ def test_workspace_tools_deny_mode_denies_edit(tmp_path) -> None:
         {"path": "notes.txt", "old_text": "hello", "new_text": "bye"},
     )
 
-    assert output.startswith("Permission denied:")
-    assert note.read_text(encoding="utf-8") == "hello"
+    assert output == "Edited notes.txt"
+    assert note.read_text(encoding="utf-8") == "bye"
 
 
 def test_workspace_tools_allow_mode_allows_edit(tmp_path) -> None:
@@ -112,10 +111,33 @@ def test_permission_policy_allows_stderr_merge_without_prompt(tmp_path) -> None:
     assert approvals == []
 
 
-def test_permission_policy_still_asks_for_file_redirect(tmp_path) -> None:
+def test_permission_policy_allows_output_redirect_without_prompt(tmp_path) -> None:
     policy = PermissionPolicy(tmp_path, mode="ask", approver=lambda *args: False)
 
     decision = policy.check("bash", {"command": "echo hello > note.txt"})
 
+    assert decision.action is PermissionAction.ALLOW
+
+
+def test_permission_policy_asks_for_shell_delete(tmp_path) -> None:
+    policy = PermissionPolicy(tmp_path, mode="ask", approver=lambda *args: False)
+
+    decision = policy.check("bash", {"command": "rm -rf notes.txt"})
+
     assert decision.action is PermissionAction.DENY
-    assert ">" in decision.reason
+    assert "deletes local files" in decision.reason
+
+
+def test_permission_policy_allows_delete_under_configured_dir(tmp_path) -> None:
+    policy = PermissionPolicy(
+        tmp_path,
+        mode="ask",
+        approver=lambda *args: False,
+        allow_delete_without_ask_dirs=["tmp"],
+    )
+
+    tool_decision = policy.check("delete_file", {"path": "tmp/cache.txt"})
+    shell_decision = policy.check("bash", {"command": "Remove-Item -LiteralPath tmp/cache.txt"})
+
+    assert tool_decision.action is PermissionAction.ALLOW
+    assert shell_decision.action is PermissionAction.ALLOW

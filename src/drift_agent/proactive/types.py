@@ -27,6 +27,9 @@ class ProactiveSource:
     channel: ProactiveChannel
     enabled: bool = True
     path: Path | None = None
+    server: str = ""
+    tool: str = ""
+    arguments: dict[str, Any] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     name: str = ""
 

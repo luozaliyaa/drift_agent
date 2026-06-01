@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
-from drift_agent.proactive.delivery import TerminalDelivery
 from drift_agent.proactive.energy import next_tick_interval
 from drift_agent.proactive.types import ProactiveDecision
+
+if TYPE_CHECKING:
+    from drift_agent.proactive.delivery import TerminalDelivery
 
 
 TickCallable = Callable[[], ProactiveDecision | Awaitable[ProactiveDecision]]
@@ -22,9 +24,11 @@ class IdlePushScheduler:
     profile: str = "daily"
     enabled: bool = False
     interval_seconds: float | None = None
-    delivery: TerminalDelivery | None = None
+    delivery: "TerminalDelivery | None" = None
 
     def __post_init__(self) -> None:
+        from drift_agent.proactive.delivery import TerminalDelivery
+
         self.delivery = self.delivery or TerminalDelivery()
         self._task: asyncio.Task[None] | None = None
         self._last_user_at: datetime | None = None

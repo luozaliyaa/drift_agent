@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob as glob_module
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,18 @@ class WorkspaceToolProvider(ToolProvider):
                 },
                 handler=self.run_write_file,
             ),
+            "workspace.make_dir": ToolSpec(
+                canonical_id="workspace.make_dir",
+                provider=self.namespace,
+                aliases=("make_dir", "mkdir"),
+                description="Create a directory inside the workspace.",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                handler=self.run_make_dir,
+            ),
             "workspace.edit_file": ToolSpec(
                 canonical_id="workspace.edit_file",
                 provider=self.namespace,
@@ -81,6 +94,33 @@ class WorkspaceToolProvider(ToolProvider):
                 },
                 handler=self.run_edit_file,
             ),
+            "workspace.move_file": ToolSpec(
+                canonical_id="workspace.move_file",
+                provider=self.namespace,
+                aliases=("move_file", "rename_file"),
+                description="Move or rename a file or directory inside the workspace.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "destination": {"type": "string"},
+                    },
+                    "required": ["source", "destination"],
+                },
+                handler=self.run_move_file,
+            ),
+            "workspace.delete_file": ToolSpec(
+                canonical_id="workspace.delete_file",
+                provider=self.namespace,
+                aliases=("delete_file", "remove_file"),
+                description="Delete a file inside the workspace.",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                handler=self.run_delete_file,
+            ),
             "workspace.glob": ToolSpec(
                 canonical_id="workspace.glob",
                 provider=self.namespace,
@@ -92,6 +132,48 @@ class WorkspaceToolProvider(ToolProvider):
                     "required": ["pattern"],
                 },
                 handler=self.run_glob,
+            ),
+            "workspace.list_dir": ToolSpec(
+                canonical_id="workspace.list_dir",
+                provider=self.namespace,
+                aliases=("list_dir", "ls"),
+                description="List files and directories inside a workspace directory.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "limit": {"type": "integer"},
+                    },
+                },
+                handler=self.run_list_dir,
+            ),
+            "workspace.file_info": ToolSpec(
+                canonical_id="workspace.file_info",
+                provider=self.namespace,
+                aliases=("file_info", "stat"),
+                description="Return metadata for a workspace file or directory.",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                handler=self.run_file_info,
+            ),
+            "workspace.search_text": ToolSpec(
+                canonical_id="workspace.search_text",
+                provider=self.namespace,
+                aliases=("search_text", "grep"),
+                description="Search text in workspace files.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "pattern": {"type": "string"},
+                        "limit": {"type": "integer"},
+                    },
+                    "required": ["query"],
+                },
+                handler=self.run_search_text,
             ),
         }
 
@@ -160,6 +242,11 @@ class WorkspaceToolProvider(ToolProvider):
         target.write_text(content, encoding="utf-8")
         return f"Wrote {len(content)} bytes to {path}"
 
+    def run_make_dir(self, path: str) -> str:
+        target = self.safe_path(path)
+        target.mkdir(parents=True, exist_ok=True)
+        return f"Created directory {path}"
+
     def run_edit_file(self, path: str, old_text: str, new_text: str) -> str:
         target = self.safe_path(path)
         text = target.read_text(encoding="utf-8")
@@ -168,11 +255,78 @@ class WorkspaceToolProvider(ToolProvider):
         target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
         return f"Edited {path}"
 
+    def run_move_file(self, source: str, destination: str) -> str:
+        source_path = self.safe_path(source)
+        destination_path = self.safe_path(destination)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source_path), str(destination_path))
+        return f"Moved {source} to {destination}"
+
+    def run_delete_file(self, path: str) -> str:
+        target = self.safe_path(path)
+        if target.is_dir():
+            return f"Error: Refusing to delete directory {path}"
+        target.unlink()
+        return f"Deleted {path}"
+
     def run_glob(self, pattern: str) -> str:
         matches: list[str] = []
         for match in glob_module.glob(pattern, root_dir=self.workdir, recursive=True):
             if (self.workdir / match).resolve().is_relative_to(self.workdir):
                 matches.append(str(match))
+        return "\n".join(matches) if matches else "(no matches)"
+
+    def run_list_dir(self, path: str = ".", limit: int | None = None) -> str:
+        target = self.safe_path(path)
+        entries = sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+        if limit is not None and limit > 0:
+            visible = entries[:limit]
+        else:
+            visible = entries
+        lines = [format_dir_entry(entry) for entry in visible]
+        if limit is not None and limit > 0 and len(entries) > limit:
+            lines.append(f"... ({len(entries) - limit} more entries)")
+        return "\n".join(lines) if lines else "(empty)"
+
+    def run_file_info(self, path: str) -> str:
+        target = self.safe_path(path)
+        stat = target.stat()
+        kind = "directory" if target.is_dir() else "file"
+        relative = target.relative_to(self.workdir)
+        return "\n".join(
+            [
+                f"path: {relative}",
+                f"type: {kind}",
+                f"size: {stat.st_size}",
+                f"modified: {int(stat.st_mtime)}",
+            ]
+        )
+
+    def run_search_text(
+        self,
+        query: str,
+        pattern: str = "**/*",
+        limit: int | None = None,
+    ) -> str:
+        if not query:
+            return "Error: query is required"
+        max_matches = limit if limit is not None and limit > 0 else 50
+        matches: list[str] = []
+        for match in glob_module.glob(pattern, root_dir=self.workdir, recursive=True):
+            path = (self.workdir / match).resolve()
+            if not path.is_relative_to(self.workdir) or not path.is_file():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except UnicodeDecodeError:
+                continue
+            except OSError:
+                continue
+            for line_number, line in enumerate(lines, start=1):
+                if query in line:
+                    matches.append(f"{match}:{line_number}: {line}")
+                    if len(matches) >= max_matches:
+                        return "\n".join(matches)
         return "\n".join(matches) if matches else "(no matches)"
 
 
@@ -186,3 +340,9 @@ class WorkspaceTools(ToolRegistry):
     ) -> None:
         super().__init__()
         self.register_provider(WorkspaceToolProvider(workdir, permission_policy))
+
+
+def format_dir_entry(path: Path) -> str:
+    marker = "/" if path.is_dir() else ""
+    size = "-" if path.is_dir() else str(path.stat().st_size)
+    return f"{path.name}{marker}\t{size}"

@@ -109,6 +109,38 @@ def test_cli_passes_permission_mode_to_live_planner(capsys, monkeypatch) -> None
     assert "final: live answer" in captured.out
 
 
+def test_cli_passes_delete_without_ask_dirs_to_permission_policy(capsys, monkeypatch) -> None:
+    class FakeMemoryManager:
+        def __init__(self, **kwargs):
+            pass
+
+    class FakeDeepSeekPlanner:
+        def __init__(self, config, **kwargs):
+            policy = kwargs["permission_policy"]
+            assert any(str(path).endswith("scratch") for path in policy.allow_delete_without_ask_dirs)
+
+        def __call__(self, state: AgentState):
+            from drift_agent.loop import StepResult
+
+            return StepResult(
+                action="fake-live",
+                observation="called fake live planner",
+                status=AgentStatus.SUCCESS,
+                output="live answer",
+            )
+
+    monkeypatch.setattr("drift_agent.cli.load_dotenv", lambda: None)
+    monkeypatch.setattr("drift_agent.cli.DeepSeekPlanner", FakeDeepSeekPlanner)
+    monkeypatch.setattr("drift_agent.cli.MemoryManager", FakeMemoryManager)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    exit_code = main(["write tests", "--allow-delete-without-ask-dir", "scratch"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "final: live answer" in captured.out
+
+
 def test_cli_passes_memory_options_to_live_planner(capsys, monkeypatch) -> None:
     class FakeMemoryManager:
         def __init__(self, **kwargs):

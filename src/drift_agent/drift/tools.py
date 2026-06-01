@@ -63,22 +63,18 @@ class DriftToolSet:
             return ToolCallResult("drift.mount_server", "MCP mount_server is reserved for a later phase.", True)
 
         canonical_id = self.registry.resolve_name(name)
-        if self.message_sent and canonical_id not in {
-            "workspace.write_file",
-            "workspace.edit_file",
-        }:
+        if self.message_sent and canonical_id not in DRIFT_AFTER_PUSH_TOOLS:
             return ToolCallResult(
                 canonical_id,
-                "Error: after message_push only write_file, edit_file, or finish_drift may be called.",
+                "Error: after message_push only workspace mutating tools or finish_drift may be called.",
                 True,
             )
-        if canonical_id in {"workspace.write_file", "workspace.edit_file"}:
+        if canonical_id in DRIFT_MUTATING_WORKSPACE_TOOLS:
             try:
                 arguments = parse_arguments(raw_arguments)
             except ValueError as exc:
                 return ToolCallResult(canonical_id, f"Error: {exc}", True)
-            path = str(arguments.get("path") or "")
-            if not self._path_in_drift_dir(path):
+            if not self._arguments_in_drift_dir(arguments):
                 return ToolCallResult(
                     canonical_id,
                     "Error: Drift writes are restricted to the drift directory.",
@@ -182,8 +178,19 @@ class DriftToolSet:
         )
 
     def _path_in_drift_dir(self, path: str) -> bool:
-        target = (self.workdir / path).resolve()
+        try:
+            target = (self.workdir / path).resolve()
+        except OSError:
+            return False
         return target.is_relative_to(self.drift_dir)
+
+    def _arguments_in_drift_dir(self, arguments: dict[str, Any]) -> bool:
+        for key in ("path", "source", "destination"):
+            if key not in arguments:
+                continue
+            if not self._path_in_drift_dir(str(arguments.get(key) or "")):
+                return False
+        return True
 
     def _drift_specs(self) -> list[ToolSpec]:
         return [
@@ -258,3 +265,14 @@ def bounded_int(value: object, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, min(parsed, 50))
+
+
+DRIFT_MUTATING_WORKSPACE_TOOLS = {
+    "workspace.write_file",
+    "workspace.edit_file",
+    "workspace.make_dir",
+    "workspace.move_file",
+    "workspace.delete_file",
+}
+
+DRIFT_AFTER_PUSH_TOOLS = DRIFT_MUTATING_WORKSPACE_TOOLS | {"drift.finish_drift"}

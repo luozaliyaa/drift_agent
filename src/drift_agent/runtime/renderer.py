@@ -78,6 +78,35 @@ class TerminalRenderer:
                 self._saw_model_delta = True
             return 0
 
+        if event.type is RuntimeEventType.TOOL_STARTED:
+            self._finish_stream_line_if_needed(stream)
+            name = event.payload.get("name", event.message)
+            arguments = event.payload.get("arguments", "")
+            print(f"tool: {name} {preview_text(arguments)}", file=stream)
+            return 0
+
+        if event.type is RuntimeEventType.TOOL_FINISHED:
+            self._finish_stream_line_if_needed(stream)
+            name = event.payload.get("name", event.message)
+            status = "error" if event.payload.get("error") else "ok"
+            output = event.payload.get("output", "")
+            print(f"tool result: {name} {status} {preview_text(output)}", file=stream)
+            return 0
+
         if self.trace:
             print(f"{event.type.value}: {event.message}", file=stream)
         return 0
+
+    def _finish_stream_line_if_needed(self, stream: TextIO) -> None:
+        if self._saw_model_delta:
+            print(file=stream)
+            self._saw_model_delta = False
+
+
+def preview_text(value: object, limit: int = 240) -> str:
+    text = " ".join(str(value).split())
+    if not text:
+        return ""
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text

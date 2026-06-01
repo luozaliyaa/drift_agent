@@ -96,6 +96,8 @@ def create_default_tool_registry(
     permission_policy: PermissionPolicy | None = None,
     enable_web_tools: bool = False,
     enable_mcp_tools: bool = False,
+    mcp_config_path: str | Path = "mcp_servers.json",
+    mcp_server: str = "github",
     memory_manager: MemoryManager | None = None,
 ) -> ToolRegistry:
     from drift_agent.tools.mcp import MCPToolProvider
@@ -110,5 +112,11 @@ def create_default_tool_registry(
     if enable_web_tools:
         registry.register_provider(WebToolProvider(enabled=True))
     if enable_mcp_tools:
-        registry.register_provider(MCPToolProvider(enabled=False))
+        registry.register_provider(
+            MCPToolProvider(
+                server_name=mcp_server,
+                enabled=True,
+                config_path=mcp_config_path,
+            )
+        )
     return registry

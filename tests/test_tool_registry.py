@@ -13,6 +13,36 @@ from drift_agent.tools import (
 )
 
 
+class FakeMCPClient:
+    def __init__(self, server) -> None:
+        self.server = server
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        pass
+
+    def list_tools(self):
+        return [
+            {
+                "name": "list_notifications",
+                "description": "List GitHub notifications",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"filter": {"type": "string"}},
+                },
+            }
+        ]
+
+    def call_tool(self, name, arguments):
+        return {
+            "tool": name,
+            "arguments": arguments,
+            "server": self.server.name,
+        }
+
+
 def test_registry_exports_namespaced_openai_tools(tmp_path) -> None:
     registry = create_default_tool_registry(
         tmp_path,
@@ -23,6 +53,12 @@ def test_registry_exports_namespaced_openai_tools(tmp_path) -> None:
     names = {tool["function"]["name"] for tool in tools}
 
     assert "workspace__read_file" in names
+    assert "workspace__list_dir" in names
+    assert "workspace__file_info" in names
+    assert "workspace__search_text" in names
+    assert "workspace__make_dir" in names
+    assert "workspace__move_file" in names
+    assert "workspace__delete_file" in names
     assert "read_file" not in names
 
 
@@ -103,6 +139,32 @@ def test_web_fetch_is_exposed_when_enabled() -> None:
 
     assert "web__fetch" in names
     assert "web__search" not in names
+
+
+def test_mcp_provider_exposes_configured_server_tools(tmp_path, monkeypatch) -> None:
+    from drift_agent.tools import mcp as mcp_module
+
+    config_path = tmp_path / "mcp_servers.json"
+    config_path.write_text(
+        json.dumps({"servers": {"github": {"command": "fake-github-mcp"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_module, "SyncMCPClient", FakeMCPClient)
+    registry = create_default_tool_registry(
+        enable_mcp_tools=True,
+        mcp_config_path=config_path,
+        mcp_server="github",
+    )
+
+    names = {tool["function"]["name"] for tool in registry.as_openai_tools()}
+    result = registry.dispatch_json(
+        "mcp__github__list_notifications",
+        {"filter": "participating"},
+    )
+
+    assert "mcp__github__list_notifications" in names
+    assert json.loads(result)["tool"] == "list_notifications"
+    assert json.loads(result)["arguments"] == {"filter": "participating"}
 
 
 def test_disabled_stub_providers_return_recoverable_errors() -> None:

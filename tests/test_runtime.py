@@ -218,3 +218,14 @@ def test_renderer_prints_final_answer(capsys) -> None:
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "final: ok" in captured.out
+
+
+def test_renderer_prints_tool_logs(capsys) -> None:
+    renderer = TerminalRenderer()
+
+    renderer.render(RuntimeEvent.tool_started("workspace__bash", '{"command":"pwd"}'))
+    renderer.render(RuntimeEvent.tool_finished("workspace.bash", "C:/repo", False))
+
+    captured = capsys.readouterr()
+    assert 'tool: workspace__bash {"command":"pwd"}' in captured.out
+    assert "tool result: workspace.bash ok C:/repo" in captured.out

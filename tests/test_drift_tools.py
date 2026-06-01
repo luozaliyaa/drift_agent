@@ -26,6 +26,27 @@ def test_after_message_push_only_write_edit_or_finish_allowed(tmp_path) -> None:
     assert "after message_push" in denied.output
 
 
+def test_after_message_push_allows_drift_scoped_mutating_tools(tmp_path) -> None:
+    tools = DriftToolSet(workdir=tmp_path, drift_dir="drift", permission_mode="allow")
+
+    tools.dispatch("message_push", {"message": "hello"})
+    mkdir = tools.dispatch("make_dir", {"path": "drift/notes"})
+    write = tools.dispatch("write_file", {"path": "drift/notes/a.txt", "content": "a"})
+    move = tools.dispatch(
+        "move_file",
+        {"source": "drift/notes/a.txt", "destination": "drift/notes/b.txt"},
+    )
+    delete = tools.dispatch("delete_file", {"path": "drift/notes/b.txt"})
+    outside = tools.dispatch("make_dir", {"path": "notes"})
+
+    assert mkdir.error is False
+    assert write.error is False
+    assert move.error is False
+    assert delete.error is False
+    assert outside.error is True
+    assert "restricted" in outside.output
+
+
 def test_finish_drift_validates_message_result(tmp_path) -> None:
     tools = DriftToolSet(workdir=tmp_path, drift_dir="drift", permission_mode="allow")
 
