@@ -143,6 +143,43 @@ Run one proactive tick and exit:
 python -m drift_agent.cli --mode stub --proactive-once
 ```
 
+### Drift Background Tasks
+
+When proactive is enabled and no alert/content/context item is visible, Drift can
+use idle time to run one background skill from `drift/skills/*/SKILL.md`.
+
+Drift is enabled by default whenever proactive is enabled. It records successful
+runs in `drift/drift.json`, keeps a shared `drift/drift_note.md`, and creates
+per-skill `state.json` files. Drift can send at most one terminal notice per run
+with `message_push`, and every run must finish with `finish_drift`.
+
+Useful options:
+
+```powershell
+python -m drift_agent.cli --proactive on --drift on
+python -m drift_agent.cli --proactive on --drift off
+python -m drift_agent.cli --proactive on --drift-dir drift --drift-min-interval-hours 1
+python -m drift_agent.cli --proactive on --drift-permission-mode allow
+```
+
+Minimal skill:
+
+```markdown
+---
+name: explore-curiosity
+description: Ask one light question when there is nothing else to push
+---
+
+## Goal
+Ask one small, natural question if the queue has anything useful.
+
+## Workflow
+1. Read `drift/skills/explore-curiosity/queue.md`.
+2. If the queue has a question, call `message_push` once.
+3. Update queue/state files under `drift/`.
+4. Call `finish_drift` with `message_result="sent"` or `"silent"`.
+```
+
 Enable idle proactive notices in async interactive mode:
 
 ```powershell

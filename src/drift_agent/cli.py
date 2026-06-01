@@ -10,6 +10,7 @@ from collections.abc import Sequence
 
 from drift_agent.config import load_deepseek_config, load_dotenv
 from drift_agent.deepseek import DeepSeekPlanner
+from drift_agent.drift import DriftConfig, DriftRunner
 from drift_agent.loop import AgentLoop, StubPlanner
 from drift_agent.memory import MemoryManager
 from drift_agent.permissions import PermissionPolicy, prompt_approver
@@ -148,6 +149,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--proactive-once",
         action="store_true",
         help="Run one proactive tick and exit when no task is provided.",
+    )
+    parser.add_argument(
+        "--drift",
+        choices=["on", "off"],
+        default="on",
+        help="Enable Drift background tasks when proactive has nothing to send.",
+    )
+    parser.add_argument(
+        "--drift-dir",
+        default="drift",
+        help="Directory containing drift/skills and drift state.",
+    )
+    parser.add_argument(
+        "--drift-min-interval-hours",
+        type=float,
+        default=1.0,
+        help="Minimum hours between Drift runs.",
+    )
+    parser.add_argument(
+        "--drift-max-steps",
+        type=int,
+        default=30,
+        help="Maximum DeepSeek tool-loop steps for one Drift run.",
+    )
+    parser.add_argument(
+        "--drift-permission-mode",
+        choices=["deny", "allow"],
+        default="deny",
+        help="Permission mode for Drift background write/edit/shell tools.",
     )
     return parser
 
@@ -341,12 +371,35 @@ def build_proactive_scheduler(
         config=config,
         client=getattr(stepper, "client", None),
         memory_manager=getattr(stepper, "memory_manager", None),
+        drift_runner=build_drift_runner(args, stepper),
     )
     return IdlePushScheduler(
         runtime=None,
         tick=tick.run_once,
         profile=args.proactive_profile,
         enabled=True,
+    )
+
+
+def build_drift_runner(
+    args: argparse.Namespace,
+    stepper,
+) -> DriftRunner | None:
+    if args.drift != "on":
+        return None
+    client = getattr(stepper, "client", None)
+    if client is None:
+        return None
+    return DriftRunner(
+        config=DriftConfig(
+            enabled=True,
+            drift_dir=args.drift_dir,
+            min_interval_hours=args.drift_min_interval_hours,
+            max_steps=args.drift_max_steps,
+            permission_mode=args.drift_permission_mode,
+        ),
+        client=client,
+        memory_manager=getattr(stepper, "memory_manager", None),
     )
 
 

@@ -28,16 +28,21 @@ class ProactiveAgentTick:
         client: ChatClient | None = None,
         memory_manager: MemoryManager | None = None,
         source_loader: ProactiveSourceLoader | None = None,
+        drift_runner: object | None = None,
     ) -> None:
         self.config = config
         self.client = client
         self.memory_manager = memory_manager
         self.source_loader = source_loader or ProactiveSourceLoader(config.sources_path)
+        self.drift_runner = drift_runner
 
     def run_once(self) -> ProactiveDecision:
         events = self.source_loader.load_events()
         visible_events = select_visible_events(events, self.config.context_prob)
         if not visible_events:
+            drift_decision = self._run_drift()
+            if drift_decision is not None:
+                return drift_decision
             return ProactiveDecision("skip", reason="no proactive events")
         if self.client is None:
             return fallback_decision(visible_events)
@@ -48,6 +53,25 @@ class ProactiveAgentTick:
                 {"role": "user", "content": prompt},
             ],
             [],
+        )
+
+    def _run_drift(self) -> ProactiveDecision | None:
+        if self.drift_runner is None:
+            return None
+        maybe_run = getattr(self.drift_runner, "maybe_run", None)
+        if not callable(maybe_run):
+            return None
+        result = maybe_run()
+        if getattr(result, "should_send", False):
+            return ProactiveDecision(
+                decision="reply",
+                message=str(getattr(result, "message", "")),
+                evidence=["drift"],
+                reason=str(getattr(result, "one_line", "drift")),
+            )
+        return ProactiveDecision(
+            decision="skip",
+            reason=str(getattr(result, "reason", "drift silent")),
         )
         return parse_decision(str(message.get("content") or ""))
 

@@ -5,6 +5,7 @@ import json
 from drift_agent.proactive.agent_tick import ProactiveAgentTick
 from drift_agent.proactive.sources import ProactiveSourceLoader
 from drift_agent.proactive.types import ProactiveConfig
+from drift_agent.drift.types import DriftResult
 
 
 class FakeClient:
@@ -124,3 +125,53 @@ def test_context_fallback_respects_probability(tmp_path) -> None:
 
     assert skipped.should_send is False
     assert visible.should_send is True
+
+
+def test_proactive_empty_events_triggers_drift(tmp_path) -> None:
+    class FakeDrift:
+        def __init__(self) -> None:
+            self.called = False
+
+        def maybe_run(self):
+            self.called = True
+            return DriftResult(
+                completed=True,
+                message_result="sent",
+                message="drift says hello",
+                one_line="curiosity: asked",
+            )
+
+    drift = FakeDrift()
+    tick = ProactiveAgentTick(
+        config=ProactiveConfig(enabled=True, sources_path=tmp_path / "missing.json"),
+        drift_runner=drift,
+    )
+
+    decision = tick.run_once()
+
+    assert drift.called is True
+    assert decision.should_send is True
+    assert decision.message == "drift says hello"
+
+
+def test_proactive_events_do_not_trigger_drift(tmp_path) -> None:
+    class FakeDrift:
+        called = False
+
+        def maybe_run(self):
+            self.called = True
+            return DriftResult(completed=False)
+
+    sources = tmp_path / "sources.json"
+    write_sources(sources, [{"event_id": "a1", "title": "Alert"}])
+    drift = FakeDrift()
+    tick = ProactiveAgentTick(
+        config=ProactiveConfig(enabled=True, sources_path=sources),
+        client=FakeClient(json.dumps({"decision": "skip", "reason": "handled"})),
+        drift_runner=drift,
+    )
+
+    decision = tick.run_once()
+
+    assert drift.called is False
+    assert decision.reason == "handled"
