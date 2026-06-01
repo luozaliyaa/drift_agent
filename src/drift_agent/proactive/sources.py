@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from drift_agent.mcp import MCPClientError, MCPServerConfig, SyncMCPClient, load_mcp_config
 from drift_agent.proactive.types import ProactiveEvent, ProactiveSource
+
+if TYPE_CHECKING:
+    from drift_agent.plugins import PluginManager
 
 
 class ProactiveSourceLoader:
@@ -17,22 +20,26 @@ class ProactiveSourceLoader:
         *,
         mcp_config_path: str | Path = "mcp_servers.json",
         mcp_client_factory: Any | None = None,
+        plugin_manager: "PluginManager | None" = None,
     ) -> None:
         self.sources_path = Path(sources_path)
         self.mcp_config_path = Path(mcp_config_path)
         self.mcp_client_factory = mcp_client_factory or SyncMCPClient
+        self.plugin_manager = plugin_manager
 
     def load_sources(self) -> list[ProactiveSource]:
+        plugin_sources = self.plugin_manager.proactive_sources() if self.plugin_manager else []
         if not self.sources_path.exists():
-            return []
+            return plugin_sources
         try:
             raw = json.loads(self.sources_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return []
+            return plugin_sources
         raw_sources = raw.get("sources", raw) if isinstance(raw, dict) else raw
         if not isinstance(raw_sources, list):
-            return []
-        return [source for item in raw_sources if (source := parse_source(item))]
+            return plugin_sources
+        file_sources = [source for item in raw_sources if (source := parse_source(item))]
+        return [*file_sources, *plugin_sources]
 
     def load_events(self) -> list[ProactiveEvent]:
         events: list[ProactiveEvent] = []

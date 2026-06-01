@@ -14,6 +14,7 @@ from drift_agent.config import DeepSeekConfig
 from drift_agent.loop import AgentState, AgentStatus, StepResult
 from drift_agent.memory import MemoryLLM, MemoryManager
 from drift_agent.permissions import PermissionPolicy
+from drift_agent.plugins import PluginManager
 from drift_agent.tools import ToolRegistry, create_default_tool_registry
 
 
@@ -92,6 +93,7 @@ class DeepSeekPlanner:
     memory_manager: MemoryManager | None = None
     show_memory: bool = False
     tool_registry: ToolRegistry | None = None
+    plugin_manager: PluginManager | None = None
 
     def __post_init__(self) -> None:
         if not self.config.api_key:
@@ -106,6 +108,7 @@ class DeepSeekPlanner:
             self.workdir,
             permission_policy=self.permission_policy,
             memory_manager=self.memory_manager,
+            plugin_manager=self.plugin_manager,
         )
 
     def __call__(self, state: AgentState) -> StepResult:
@@ -156,6 +159,7 @@ class DeepSeekPlanner:
             show_memory=self.show_memory,
             stream=stream,
             error_formatter=_format_request_error,
+            plugin_manager=self.plugin_manager,
         )
 
 

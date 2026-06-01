@@ -99,11 +99,13 @@ def create_default_tool_registry(
     mcp_config_path: str | Path = "mcp_servers.json",
     mcp_server: str = "github",
     memory_manager: MemoryManager | None = None,
+    plugin_manager: Any | None = None,
 ) -> ToolRegistry:
     from drift_agent.tools.mcp import MCPToolProvider
     from drift_agent.tools.memory import MemoryToolProvider
     from drift_agent.tools.web import WebToolProvider
     from drift_agent.tools.workspace import WorkspaceToolProvider
+    from drift_agent.plugins import PluginToolProvider
 
     registry = ToolRegistry()
     registry.register_provider(WorkspaceToolProvider(workdir, permission_policy))
@@ -119,4 +121,6 @@ def create_default_tool_registry(
                 config_path=mcp_config_path,
             )
         )
+    if plugin_manager is not None and plugin_manager.enabled:
+        registry.register_provider(PluginToolProvider(plugin_manager))
     return registry

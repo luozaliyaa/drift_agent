@@ -14,6 +14,7 @@ from drift_agent.drift import DriftConfig, DriftRunner
 from drift_agent.loop import AgentLoop, StubPlanner
 from drift_agent.memory import MemoryManager
 from drift_agent.permissions import PermissionPolicy, prompt_approver
+from drift_agent.plugins import PluginManager
 from drift_agent.proactive import ProactiveAgentTick, ProactiveConfig, ProactiveSourceLoader
 from drift_agent.runtime import AsyncAgentRuntime
 from drift_agent.runtime.input import AsyncInputReader
@@ -140,6 +141,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="List active model-callable tools and exit.",
     )
     parser.add_argument(
+        "--plugins",
+        choices=["on", "off"],
+        default="on",
+        help="Enable or disable local plugins from --plugins-dir.",
+    )
+    parser.add_argument(
+        "--plugins-dir",
+        default="plugins",
+        help="Directory containing local plugins as */plugin.py.",
+    )
+    parser.add_argument(
         "--proactive",
         choices=["on", "off"],
         default="off",
@@ -203,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
+    plugin_manager = build_plugin_manager(args)
 
     if args.list_tools:
         permission_policy = PermissionPolicy(
@@ -227,6 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_config_path=args.mcp_config,
             mcp_server=args.mcp_server,
             memory_manager=memory_manager,
+            plugin_manager=plugin_manager,
         )
         for info in registry.list_tool_info():
             print(
@@ -235,18 +249,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return 0
 
-    stepper = build_stepper(args, parser)
+    stepper = build_stepper(args, parser, plugin_manager)
     if args.runtime == "sync":
         if not args.task:
             return run_repl(args, stepper)
         return run_task(args.task, args, stepper)
 
-    return asyncio.run(run_async_cli(args, stepper))
+    return asyncio.run(run_async_cli(args, stepper, plugin_manager))
 
 
-async def run_async_cli(args: argparse.Namespace, stepper) -> int:
+async def run_async_cli(
+    args: argparse.Namespace,
+    stepper,
+    plugin_manager: PluginManager | None = None,
+) -> int:
     renderer = TerminalRenderer(trace=args.trace)
-    scheduler = build_proactive_scheduler(args, stepper)
+    scheduler = build_proactive_scheduler(args, stepper, plugin_manager)
     runtime = AsyncAgentRuntime(
         stepper=stepper,
         max_steps=args.max_steps,
@@ -337,7 +355,11 @@ async def run_async_repl(
         render_pending_system_notices(runtime, renderer)
 
 
-def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
+def build_stepper(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    plugin_manager: PluginManager | None = None,
+):
     if args.mode == "live":
         config = load_deepseek_config()
         try:
@@ -363,6 +385,7 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
                 mcp_config_path=args.mcp_config,
                 mcp_server=args.mcp_server,
                 memory_manager=memory_manager,
+                plugin_manager=plugin_manager,
             )
             return DeepSeekPlanner(
                 config,
@@ -371,6 +394,7 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
                 memory_manager=memory_manager,
                 show_memory=args.show_memory,
                 tool_registry=tool_registry,
+                plugin_manager=plugin_manager,
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -380,6 +404,7 @@ def build_stepper(args: argparse.Namespace, parser: argparse.ArgumentParser):
 def build_proactive_scheduler(
     args: argparse.Namespace,
     stepper,
+    plugin_manager: PluginManager | None = None,
 ) -> IdlePushScheduler | None:
     if args.proactive != "on" and not args.proactive_once:
         return None
@@ -396,6 +421,7 @@ def build_proactive_scheduler(
         source_loader=ProactiveSourceLoader(
             args.proactive_sources,
             mcp_config_path=args.mcp_config,
+            plugin_manager=plugin_manager,
         ),
         drift_runner=build_drift_runner(args, stepper),
     )
@@ -404,6 +430,13 @@ def build_proactive_scheduler(
         tick=tick.run_once,
         profile=args.proactive_profile,
         enabled=True,
+    )
+
+
+def build_plugin_manager(args: argparse.Namespace) -> PluginManager:
+    return PluginManager.discover(
+        args.plugins_dir,
+        enabled=args.plugins == "on",
     )
 
 

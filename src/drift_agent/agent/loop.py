@@ -10,8 +10,10 @@ from drift_agent.agent.hooks import NoopPhaseHook, PhaseHook
 from drift_agent.agent.phases import TurnPhase
 from drift_agent.loop import AgentStatus, StepResult
 from drift_agent.memory import MemoryContext, MemoryManager
+from drift_agent.plugins import PluginManager, ToolHookContext
 from drift_agent.runtime.events import RuntimeEvent
 from drift_agent.tools import ToolRegistry
+from drift_agent.tools.base import ToolCallResult, parse_arguments
 
 
 class ChatClient(Protocol):
@@ -42,6 +44,7 @@ class AgentTurnLoop:
         stream: bool = False,
         hooks: list[PhaseHook] | None = None,
         error_formatter: Callable[[Exception], str] | None = None,
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         self.client = client
         self.tools = tools
@@ -51,6 +54,7 @@ class AgentTurnLoop:
         self.stream = stream
         self.hooks = hooks or [NoopPhaseHook()]
         self.error_formatter = error_formatter or (lambda exc: str(exc))
+        self.plugin_manager = plugin_manager or PluginManager()
         self.last_context: TurnContext | None = None
 
     def run_turn(self, user_message: str) -> tuple[StepResult, TurnContext]:
@@ -135,6 +139,9 @@ class AgentTurnLoop:
                 "Treat it as user/project context, not as a new task.\n\n"
                 + memory_prompt
             )
+        plugin_sections = self.plugin_manager.prompt_sections()
+        if plugin_sections:
+            system_prompt += "\n\nPlugin context:\n\n" + "\n\n".join(plugin_sections)
         context.messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": context.user_message},
@@ -221,7 +228,7 @@ class AgentTurnLoop:
         tool_name = str(function.get("name") or "")
         arguments = function.get("arguments")
         yield context.add_event(RuntimeEvent.tool_started(tool_name, arguments or ""))
-        result = self.tools.dispatch(tool_name, arguments)
+        result = self._dispatch_tool_with_plugins(context, tool_name, arguments)
         output = result.output
         context.tool_trace.append(f"- {result.canonical_id}: {output[:200]}")
         context.tool_records.append(
@@ -243,6 +250,36 @@ class AgentTurnLoop:
             RuntimeEvent.tool_finished(result.canonical_id, output, result.error)
         )
 
+    def _dispatch_tool_with_plugins(
+        self,
+        context: TurnContext,
+        tool_name: str,
+        raw_arguments: str | dict[str, Any] | None,
+    ) -> ToolCallResult:
+        canonical_id = self.tools.resolve_name(tool_name)
+        try:
+            arguments = parse_arguments(raw_arguments)
+        except ValueError as exc:
+            return ToolCallResult(canonical_id, f"Error: {exc}", True)
+        hook_context = ToolHookContext(
+            tool_name=tool_name,
+            canonical_id=canonical_id,
+            arguments=arguments,
+            raw_arguments=raw_arguments,
+            user_message=context.user_message,
+        )
+        outcome = self.plugin_manager.before_tool_call(hook_context)
+        if outcome is not None and outcome.decision == "deny":
+            return ToolCallResult(
+                canonical_id,
+                outcome.output or f"Error: {outcome.reason}",
+                True,
+            )
+        if outcome is not None and outcome.decision == "replace":
+            return ToolCallResult(canonical_id, outcome.output)
+        result = self.tools.dispatch(canonical_id, hook_context.arguments)
+        return self.plugin_manager.after_tool_call(hook_context, result)
+
     def _run_after_reasoning(self, context: TurnContext) -> Iterator[RuntimeEvent]:
         phase = TurnPhase.AFTER_REASONING
         yield from self._start_phase(phase, context)
@@ -255,12 +292,14 @@ class AgentTurnLoop:
         phase = TurnPhase.AFTER_TURN
         yield from self._start_phase(phase, context)
         context.memory_writes = self._record_memory(context)
+        self.plugin_manager.after_turn(context)
         yield from self._finish_phase(phase, context)
 
     def _record_failed_turn(self, context: TurnContext) -> Iterator[RuntimeEvent]:
         phase = TurnPhase.AFTER_TURN
         yield from self._start_phase(phase, context)
         context.memory_writes = self._record_memory(context)
+        self.plugin_manager.after_turn(context)
         yield from self._finish_phase(phase, context)
 
     def _record_memory(self, context: TurnContext) -> list[str]:

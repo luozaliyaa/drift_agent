@@ -166,6 +166,93 @@ python -m drift_agent.cli "short consolidation window" --memory-keep-count 4 --m
 When memory is enabled, live mode also exposes `memory.remember`,
 `memory.recall`, and `memory.forget` as model-callable tools.
 
+## Plugins
+
+Plugins are enabled by default and are loaded from `plugins/*/plugin.py`.
+
+Useful options:
+
+```powershell
+python -m drift_agent.cli "Check the repo" --plugins-dir plugins
+python -m drift_agent.cli "Run without plugins" --plugins off
+```
+
+Minimal prompt plugin:
+
+```python
+from drift_agent.plugins import Plugin
+
+
+class AgentFocusPlugin(Plugin):
+    name = "agent_focus"
+
+    def prompt_sections(self):
+        return [
+            "User interest: prioritize AI Agent projects, GitHub activity, and tooling."
+        ]
+```
+
+Minimal tool plugin:
+
+```python
+from drift_agent.plugins import Plugin
+from drift_agent.tools.base import ToolCallResult, ToolSpec
+
+
+class EchoPlugin(Plugin):
+    name = "echo"
+
+    def tools(self):
+        return [
+            ToolSpec(
+                canonical_id="plugin.echo",
+                aliases=("echo_plugin",),
+                description="Echo text from a plugin.",
+                parameters={
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            )
+        ]
+
+    def call_tool(self, canonical_id, arguments):
+        return ToolCallResult(canonical_id, "echo: " + str(arguments["text"]))
+```
+
+Tool hooks can deny, replace, or rewrite calls:
+
+```python
+from drift_agent.plugins import Plugin, ToolHookResult
+
+
+class SafetyPlugin(Plugin):
+    name = "safety"
+
+    def before_tool_call(self, context):
+        if context.canonical_id == "workspace.bash" and "vim " in context.arguments.get("command", ""):
+            return ToolHookResult.deny("Interactive editors are not allowed.")
+        return None
+```
+
+Plugins can also provide proactive sources:
+
+```python
+class GitHubWatchPlugin(Plugin):
+    name = "github_watch"
+
+    def proactive_sources(self):
+        return [
+            {
+                "type": "github_mcp",
+                "channel": "content",
+                "server": "github",
+                "tool": "list_notifications",
+                "arguments": {"filter": "participating"},
+            }
+        ]
+```
+
 ## Runtime Events
 
 The async runtime emits internal events such as `user_message`, `agent_started`,

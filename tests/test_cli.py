@@ -141,6 +141,35 @@ def test_cli_passes_delete_without_ask_dirs_to_permission_policy(capsys, monkeyp
     assert "final: live answer" in captured.out
 
 
+def test_cli_discovers_plugins_with_flags(capsys, monkeypatch) -> None:
+    from drift_agent.plugins import PluginManager
+
+    captured = {}
+
+    def fake_discover(plugins_dir, enabled=True):
+        captured["plugins_dir"] = plugins_dir
+        captured["enabled"] = enabled
+        return PluginManager()
+
+    monkeypatch.setattr("drift_agent.cli.PluginManager.discover", fake_discover)
+
+    exit_code = main(
+        [
+            "write tests",
+            "--mode",
+            "stub",
+            "--plugins-dir",
+            "custom-plugins",
+            "--plugins",
+            "off",
+        ]
+    )
+
+    capsys.readouterr()
+    assert exit_code == 0
+    assert captured == {"plugins_dir": "custom-plugins", "enabled": False}
+
+
 def test_cli_passes_memory_options_to_live_planner(capsys, monkeypatch) -> None:
     class FakeMemoryManager:
         def __init__(self, **kwargs):
